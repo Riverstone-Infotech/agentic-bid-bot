@@ -24,8 +24,8 @@ mcp
 # HTTP requests
 requests
 
-
 numpy==1.24.4
 
-
 sentence-transformers
+
+uv

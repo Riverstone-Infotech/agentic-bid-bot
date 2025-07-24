@@ -1,162 +1,195 @@
+# ===== IMPORTS =====
 import os
-import requests
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyMuPDFLoader
+import json
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from mcp.server.fastmcp import FastMCP
-import json
-from difflib import get_close_matches
 
-# Load environment variables
+# ===== LOAD ENVIRONMENT VARIABLES =====
 load_dotenv()
 
-# ========== ENV VARS ==========
-PDF_PATH = "/Users/river/Downloads/AI project for bids/Commercial Bids/20231020 HAK DC - RFP Documents_General Furnishings 2024-08-27 15_29_07.pdf"
 GRAPHQL_ENDPOINT = os.getenv("ENTERPRISE_GRAPHQL_URL")
 GRAPHQL_API_KEY = os.getenv("ENTERPRISE_API_KEY")
 URL = os.getenv("URL")
 
-ALIAS_MAP = {
-    "sitonit": ["sitonit", "sit on it", "furniture manufacturer"],
-    "haworth": ["haworth", "haworth inc.", "modular workstation"],
-    # Add more mappings here
-}
+# ===== INITIALIZE MCP SERVER =====
+mcp = FastMCP("api_bidding")
 
-
-# ========== INIT MCP ==========
-mcp = FastMCP("Bidding Document + Enterprise Tools")
-
-# ========== LOAD DOCUMENT ==========
-loader = PyMuPDFLoader(PDF_PATH)
-documents = loader.load()
-text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-docs = text_splitter.split_documents(documents)
-
-# ========== EMBEDDINGS + VECTOR STORE ==========
-embeddings = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2",
-    model_kwargs={"device": "cpu"}
-)
-db = Chroma.from_documents(docs, embeddings)
-
-# ========== OPENAI LLM ==========
+# ===== INITIALIZE LLM AND EMBEDDING MODEL =====
 llm = ChatOpenAI(
     model_name=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo"),
     temperature=float(os.getenv("OPENAI_TEMPERATURE", 0)),
     openai_api_key=os.getenv("OPENAI_API_KEY")
 )
 
-# ========== RETRIEVAL QA ==========
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    chain_type="stuff",
-    retriever=db.as_retriever(),
-    return_source_documents=True
+# Use a lightweight embedding model
+langchain_embeddings = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"}
 )
 
-# ========== TOOL 1: DOCUMENT QA ==========
+# ===== LOAD ENTERPRISE DATA FROM JSON =====
+with open("data.json", "r") as f:
+    enterprises = json.load(f)
+
+# Extract nodes from the GraphQL-like structure
+enterprise_nodes = enterprises.get("data", {}).get("getEnterpriseListing", {}).get("edges", [])
+enterprise_texts = "\n\n".join([json.dumps(node, indent=2) for node in enterprise_nodes])
+
+# Collect all unique keys from enterprise nodes for structured comparison
+enterprise_keys = set()
+for edge in enterprise_nodes:
+    node = edge.get("node", {})
+    enterprise_keys.update(node.keys())
+
+# ===== GLOBAL VARIABLES =====
+vectordb = None  # Will hold the vector database built from uploaded PDF
+qa_chain = None  # RetrievalQA chain for PDF content
+
+
+# ===== TOOL 1: Summarize and Match Enterprise from PDF =====
+@mcp.tool(description=f"""
+    Analyzes uploaded PDF content (typically a furniture bid proposal), summarizes it, and finds the best matching enterprise.
+
+    This tool is automatically triggered when a user uploads a PDF file in Claude Desktop, even without a prompt. It performs the following steps:
+    1. Parses and summarizes the PDF content using an LLM.
+    2. Compares the summarized content against a list of predefined enterprises (from a JSON dataset).
+    3. Identifies the best matching enterprise based on capabilities, product offerings, and scale.
+    4. Returns a structured response including:
+    - The PDF content summary
+    - Full details of the matching enterprise {enterprise_keys}
+    - Explanation of the match
+    - Optional metadata like source documents
+
+    Intended for use in vendor/partner matching workflows.
+    """)
+def summarise_the_pdf_and_match_the_enterprise(content) -> str:
+    try:
+        # Split the raw content into manageable chunks for embedding
+        splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        docs = splitter.create_documents([content])  # Convert text into Document format
+
+        # Create Chroma vector DB from document chunks
+        global vectordb
+        vectordb = Chroma.from_documents(docs, langchain_embeddings)
+
+        # Set up RetrievalQA using the LLM and Chroma retriever
+        global qa_chain
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vectordb.as_retriever(),
+            return_source_documents=True
+        )
+
+        # Compose query prompt for the QA chain to match enterprises
+        match_prompt = (
+            "Here is the content of a furniture bid proposal PDF:\n\n"
+            "Now, from the list of enterprises below, identify the best match for the summarized content:\n\n"
+            f"{enterprise_texts}\n\n"
+            "Respond with the following structure:\n"
+            "1. Summary of the content\n"
+            f"2. Matching Enterprise details: {enterprise_keys}\n"
+            "3. Explanation for why this enterprise was selected\n"
+        )
+
+        # Perform summarization + matching using the QA chain
+        result = qa_chain({"query": match_prompt})
+
+        return result['result']
+
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+# ===== TOOL 2: Ask Question Based on Uploaded PDF =====
 @mcp.tool()
 def ask_question(question: str) -> str:
-    """Ask a question based on the loaded PDF document."""
+    """
+    Ask a question based on the content extracted from a previously uploaded PDF.
+    Uses the existing RetrievalQA chain to answer.
+    """
+    global qa_chain
+    global vectordb
+    if not vectordb:
+        return "❌ No PDF content available. Please upload a PDF first."
+
     if not question:
-        return "No question provided."
+        return "❌ Please provide a question."
+
     try:
         result = qa_chain({"query": question})
-        sources = [doc.metadata.get('source', 'N/A') for doc in result['source_documents']]
-        return f"Answer: {result['result']}\nSources: {sources}"
+        return f"✅ Answer: {result['result']}\n"
+
     except Exception as e:
-        return f"Error processing question: {str(e)}"
+        return f"❌ Error while answering: {str(e)}"
 
-# ========== TOOL 2: ENTERPRISE LISTING FROM GRAPHQL ==========
-# @mcp.tool()
-def load_enterprise_data():
-    """Helper to load enterprise data from GraphQL or local JSON"""
-    try:
-        # response = requests.post(GRAPHQL_ENDPOINT, headers=..., json=...)
-        # data = response.json()
-        with open("datax.json", 'r') as file:
-            data = json.load(file)
-        return data.get("data", {}).get("getEnterpriseListing", {}).get("edges", [])
-    except Exception as e:
-        print(f"Error loading enterprise data: {e}")
-        return []
 
-# @mcp.tool()
-def get_enterprise_details(name: str) -> str:
-    """Return detailed info for a given enterprise name if found, else return not found message."""
-    edges = load_enterprise_data()
-    if not name:
-        return "No name provided."
-
-    all_names = [edge["node"]["name"].lower() for edge in edges]
-    match = get_close_matches(name.lower(), all_names, n=1, cutoff=0.8)
-
-    if not match:
-        return f"No such enterprise found in the database: {name}"
-
-    matched_name = match[0]
-    for edge in edges:
-        node = edge["node"]
-        if node["name"].lower() == matched_name.lower():
-            return (
-                f"Name: {node['name']}\n"
-                f"Code: {node['code']}\n"
-                f"Description: {node['description']}\n"
-                f"Contact: {node['contactName']} | {node['email']}\n"
-                f"Phone: {node['phoneNumber']}\n"
-                f"Website: {node['website']}\n"
-                f"Address: {node['address']}\n"
-            )
-
-    return f"No such enterprise found in the database: {name}"
-
+# ===== TOOL 3: Generate a Quotation Template from PDF Content =====
 @mcp.tool()
-def query_enterprise(query: str) -> str:
-    if not query:
-        return "No query provided."
+def create_quotation_for_the_document():
+    """
+    Triggered when 'make' or 'create quotation' is asked.
+    Using the extracted content, this fills and returns a structured quotation proposal.
+    """
+    # Quotation skeleton (output template)
 
-    edges = load_enterprise_data()
-    all_names = [edge["node"]["name"] for edge in edges]
-    matched_name = None
+    global qa_chain
+    global vectordb
+    if not vectordb:
+        return "❌ No PDF content available. Please upload a PDF first."
 
-    # Try matching enterprise name or any alias
-    for name in all_names:
-        aliases = ALIAS_MAP.get(name.lower(), [])
-        for alias in aliases:
-            if alias.lower() in query.lower():
-                matched_name = name
-                break
-        if matched_name:
-            break
+    quotation = {
+        "company_details": {
+            "name": "",
+            "location": "",
+            "email": "",
+            "phone": "",
+            "certifications": [
+                # e.g., "ISO 9001:2015", "BIFMA Certified Products"
+            ]
+        },
+        "executive_summary": "",
+        "scope_of_work": [
+            {
+                "item": "",
+                "quantity": 0,
+                "notes": ""
+            }
+        ],
+        "company_capabilities": [],
+        "estimated_timeline": "",
+        "payment_terms": {
+            "advance_percent": 0,
+            "on_delivery_percent": 0
+        },
+        "featured_products": [
+            {
+                "name": "",
+                "description": "",
+                "price": 0.0
+            }
+        ]
+    }
 
-    if not matched_name:
-        return "Enterprise not found in database."
+    # Ask LLM to populate the quotation based on PDF content
+    quotation_fill_prompt = (
+        f"Using the following qachain, fill the quotation template: {quotation}. "
+        f"Only fill in available values. Leave missing values as empty or None."
+    )
 
-    # If asking for details only from database
-    if "basic" in query.lower() or "details" in query.lower():
-        return get_enterprise_details(matched_name)
-
-    # Augment the query with aliases
-    aliases = ALIAS_MAP.get(matched_name.lower(), [matched_name])
-    augmented_query = query
-    if len(aliases) > 1:
-        augmented_query += " OR " + " OR ".join(set(aliases) - {matched_name.lower()})
-
-    return ask_question(augmented_query)
+    result = qa_chain({"query": quotation_fill_prompt})
+    return result['result']
 
 
-# ========== START SERVER ==========
+# ===== START THE MCP SERVER =====
 if __name__ == "__main__":
     try:
         print("starting main")
-        # with open("datax.json",'w') as file:
-        #     json.dump(list_enterprises(),file,indent=4)
         mcp.run()
-        # print(ask_question("What information is available about sitonit in the documents?"))
-        # print(query_enterprise("sitonit"))
     except Exception as ex:
         print(ex)
