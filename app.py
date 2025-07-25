@@ -125,9 +125,16 @@ def ask_question(question: str) -> str:
 @mcp.tool()
 def create_quotation_for_the_document():
     """
-    Triggered when make or create quotation is asked
-    Using the content fill the quotation and return it in a quotation proposal format.
+    Triggered when 'make' or 'create quotation' is asked.
+    Using the extracted content, this fills and returns a structured quotation proposal.
     """
+    # Quotation skeleton (output template)
+
+    global qa_chain
+    global vectordb
+    if not vectordb:
+        return "❌ No PDF content available. Please upload a PDF first."
+
     quotation = {
         "company_details": {
             "name": "",
@@ -138,19 +145,16 @@ def create_quotation_for_the_document():
                 # e.g., "ISO 9001:2015", "BIFMA Certified Products"
             ]
         },
-        "executive_summary": "",  # Summary of company capabilities and focus
+        "executive_summary": "",
         "scope_of_work": [
             {
                 "item": "",
                 "quantity": 0,
-                "notes": ""  # e.g., design notes, features
-            },
-            # Add more items as needed
+                "notes": ""
+            }
         ],
-        "company_capabilities": [
-            # e.g., "50,000 sq. ft. facility", "In-house design", etc.
-        ],
-        "estimated_timeline": "",  # e.g., "12–14 weeks"
+        "company_capabilities": [],
+        "estimated_timeline": "",
         "payment_terms": {
             "advance_percent": 0,
             "on_delivery_percent": 0
@@ -160,15 +164,18 @@ def create_quotation_for_the_document():
                 "name": "",
                 "description": "",
                 "price": 0.0
-            },
-            # Add more products as needed
+            }
         ]
     }
 
-    quotation_fill_prompt = ( f"using {content} fill the {quotation}. Fill the available values and leave empty or none for the not available values and return the quotation." )
-    final_quotation = llm.invoke(quotation_fill_prompt)
+    # Ask LLM to populate the quotation based on PDF content
+    quotation_fill_prompt = (
+        f"Using the following qachain, fill the quotation template: {quotation}. "
+        f"Only fill in available values. Leave missing values as empty or None."
+    )
 
-    return final_quotation
+    result = qa_chain({"query": quotation_fill_prompt})
+    return result['result']
 
 
 
