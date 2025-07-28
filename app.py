@@ -231,8 +231,9 @@ def get_enterprise_catalog_data(code) -> str:
                 for product in section.get("children", []):
                     code = product.get("code")
                     description = product.get("description")
+                    price=product.get("BasePrice")[0].get("price")
                     if code and description:
-                        product_dict[code] = description
+                        product_dict[code] = [description,price]
 
         return product_dict
 
@@ -274,7 +275,7 @@ def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
             f"{json.dumps(enterprise_data, indent=2)}\n\n"
             "Respond with the following structure:\n"
             "1. Summary of the content\n"
-            f"2. Matching Enterprise details: {list(enterprise_keys)} as a dictionary only\n"
+            f"2. Matching Enterprise details: {list(enterprise_keys)} as a dictionary data structure only\n"
             "3. Explanation for why this enterprise was selected\n"
         )
 
@@ -362,8 +363,10 @@ def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
 #     result = llm.invoke(fill_prompt)
 #     return result
 
-@mcp.tool()
+@mcp.tool(description="use articraft and view as html page with effective designs and don't include additional data apart from the response.")
 def create_quotation_for_the_document():
+
+    """use articraft and view as html page with effective designs and don't include additional data apart from the response."""
     
     if not qa_chain:
         return "❌ No PDF content available. Please upload a PDF first."
@@ -381,9 +384,11 @@ def create_quotation_for_the_document():
         "executive_summary": "",
         "scope_of_work": [
             {
-                "item": "",
+                "product code":"",
+                "description": "",
                 "quantity": 0,
-                "notes": ""
+                "unit price":0,
+                "amount":0
             }
         ],
         "company_capabilities": [],
@@ -415,9 +420,10 @@ def create_quotation_for_the_document():
     details = ast.literal_eval(fixed)
 
     enterprise_price_list=get_enterprise_catalog_data(details["code"])
+    print(enterprise_price_list)
 
     quotation_fill_prompt = (
-        f"Using {pdf_content} get the product details from {chunking(str(enterprise_price_list))} and fill the following quotation template: {json.dumps(quotation)}. "
+        f"Using {pdf_content} get the product details from {chunking(str(enterprise_price_list))} and fill the following quotation template: {json.dumps(quotation)}. without price"
         "Fill in only available values and leave the rest empty or None."
     )
 
@@ -434,26 +440,58 @@ if __name__ == "__main__":
 #         print(summarise_the_pdf_and_match_the_enterprise("""
 # {
 #   `content`: `Request for Proposal (RFP) for Office Furniture
-# RFP Title: Bold Furniture Procurement
-# RFP Number: BLD-2025-001
+# RFP Title: Hunton Andrews Kurth LLP
+# RFP Number: 20037-2025-001
 # Issue Date: July 28, 2025
 # Proposal Due Date: August 15, 2025
 
-# The organization is soliciting proposals from qualified furniture vendors to supply, deliver, and install office furniture at their new headquarters. 
+# Client: Hunton Andrews Kurth LLP (Law firm)
+# Location: 2200 Pennsylvania Avenue NW, Washington, DC
+# Contact: procurement@organization.org
+
+# Project Scope:
+# - Supply, deliver, and install office furniture for new headquarters
+# - Target departments: administration, HR, finance, executive offices
+# - Requirements: ergonomic, durable, aesthetically consistent furniture
 
 # Furniture Requirements:
-# - Office Desks: 50 units (Credenza, Storm Sky Color)
-# - Standing Desks: 40 units (Credenza, Snow Day Color)  
-# - Executive Desks: 30 units (Harbor Steel Color)
-# - L shaped Desks: 30 units (Snow Day Color)
+# - Office Desks: 50 units (Credenza, Storm Sky Color, 72\"W x 18\"D)
+# - Single Standing Desks: 40 units (Cushion, Snow Day Color, 60\"W x 30\"D)
+# - Executive Desks: 30 units (Harbor Steel Color, Credenza, 72\"W x 18\"D)
+# - L-shaped Desks: 30 units (Snow Day Color, 60\"W x 30\"D)
+# Total: 150 furniture pieces
 
-# Scope includes supply, delivery, installation, setup, packaging debris removal, and warranty/support services.
+# Manufacturer Criteria:
+# - Must be legally registered in the United States
+# - Must have physical U.S. business address
+# - Must offer ready-to-order collections
+# - Must demonstrate high-quality craftsmanship
+# - Must show innovation in office furniture solutions
 
-# Evaluation criteria: Price competitiveness, quality/durability, experience/references, delivery/installation plan, warranty/after-sales service, and responsiveness.
+# Services Required:
+# - Supply of furniture per specifications
+# - Delivery to designated site
+# - Installation and setup
+# - Removal of packaging debris
+# - Warranty and support services
 
-# Timeline: RFP issued July 28, 2025, proposals due August 15, 2025, vendor selection August 25, 2025, project start September 5, 2025, completion October 15, 2025.
+# Evaluation Criteria:
+# - Price competitiveness
+# - Quality and durability
+# - Experience and references
+# - Delivery and installation plan
+# - Warranty and after-sales service
+# - Responsiveness to RFP
 
-# Contact: Sarah Johnson, procurement@organization.org, (123) 456-7890`
+# Timeline:
+# - RFP Issued: July 28, 2025
+# - Questions Deadline: August 5, 2025
+# - Proposal Deadline: August 15, 2025
+# - Vendor Selection: August 25, 2025
+# - Project Start: September 5, 2025
+# - Completion: October 15, 2025
+
+# Budget: Not specified in RFP`
 # }"""))
 #         print(create_quotation_for_the_document())
     except Exception as ex:
