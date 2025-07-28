@@ -363,7 +363,7 @@ def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
 #     result = llm.invoke(fill_prompt)
 #     return result
 
-@mcp.tool(description="use articraft and view as html page with effective designs and don't include additional data apart from the response.")
+@mcp.tool(description="use articraft and view as html page with effective designs and don't include warranty information, additional data apart from the response.")
 def create_quotation_for_the_document():
 
     """use articraft and view as html page with effective designs and don't include additional data apart from the response."""
@@ -393,10 +393,10 @@ def create_quotation_for_the_document():
         ],
         "company_capabilities": [],
         "estimated_timeline": "",
-        "payment_terms": {
-            "advance_percent": 0,
-            "on_delivery_percent": 0
-        },
+        # "payment_terms": {
+        #     "advance_percent": 0,
+        #     "on_delivery_percent": 0
+        # },
         "featured_products": [
             {
                 "name": "",
