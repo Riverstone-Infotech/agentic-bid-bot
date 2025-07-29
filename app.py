@@ -15,7 +15,8 @@ import requests
 from langchain.schema import Document
 
 # ===== GLOBALS =====
-global documents, qa_chain, vectordb, enterprise_keys, result_text
+global documents, qa_chain, vectordb, enterprise_keys, result_text,content
+content=''
 
 # ===== LOAD ENV VARIABLES =====
 load_dotenv()
@@ -240,23 +241,68 @@ def get_enterprise_catalog_data(code) -> str:
 
     except Exception as e:
         return f"Error: {str(e)}"
-# ===== TOOL 1: PDF Summary + Enterprise Match =====
-@mcp.tool(description=f"""
-    Summarizes uploaded PDF content and finds the best matching enterprise.
-    1. Parses and summarizes the PDF content.
-    2. Compares summary with known enterprises.
-    3. Returns: summary, matching enterprise, explanation.
+# ===== TOOL 1: PDF Summary =====
+@mcp.tool(description="""
+    Extracts and summarizes the content of a furniture bid proposal PDF.
+    1. Parses and chunks the provided PDF text.
+    2. Produces a coherent summary of its content.
+    3. Returns the summary string.
 """)
-def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
-    global result_text, pdf_content
+def summarize_pdf_content(content: str) -> str:
+    content=content
+    """
+    Summarizes the provided PDF content.
+
+    Args:
+        content (str): Raw text extracted from the uploaded PDF document.
+
+    Returns:
+        str: Summary of the document content or an error message.
+    """
+    global pdf_summary, pdf_content
 
     if not content.strip():
         return "❌ No PDF content provided."
 
     try:
-        # Convert raw string into QA chain
+        # Chunk and summarize the content
         pdf_content = chunking(content)
 
+        summarization_prompt = (
+            "Summarize the following furniture RFP or bid proposal content in a concise paragraph:\n\n"
+            f"{pdf_content}\n"
+        )
+
+        result = pdf_content({"query": summarization_prompt})
+        pdf_summary = result['result']
+        return pdf_summary
+
+    except Exception as e:
+        return f"❌ Error during summarization: {str(e)}"
+    
+# ===== TOOL 2: Enterprise Match =====
+@mcp.tool(description="""
+    Matches a summarized RFP or proposal to the best-fitting enterprise when user ask for the matching enterprise.
+    1. Uses the existing summary of the PDF.
+    2. Compares the summary with enterprise listings.
+    3. Returns the best-matching enterprise and the reasoning.
+""")
+def match_enterprise_with_summary() -> str:
+    """
+    Matches a provided PDF summary with the most relevant enterprise.
+
+    Args:
+        summary (str): The summarized content of a furniture RFP or proposal.
+
+    Returns:
+        str: Matching enterprise details and explanation, or error message.
+    """
+    global result_text,pdf_summary,content
+
+    if not pdf_summary.strip():
+        return "❌ No summary provided for matching."
+
+    try:
         # Fetch enterprise list
         enterprise_data = get_enterprise_list()
         if isinstance(enterprise_data, dict) and "error" in enterprise_data:
@@ -269,14 +315,13 @@ def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
             enterprise_keys.update(node.keys())
 
         match_prompt = (
-            "Here is the content of a furniture bid proposal PDF:\n\n"
-            f"{content}\n\n"
-            "Now, from the list of enterprises below, identify the best match for the summarized content:\n\n"
+            "Here is the summary of a furniture bid proposal:\n\n"
+            f"{pdf_summary}\n\n"
+            "From the following list of enterprises, identify the one that best matches this summary:\n\n"
             f"{json.dumps(enterprise_data, indent=2)}\n\n"
             "Respond with the following structure:\n"
-            "1. Summary of the content\n"
-            f"2. Matching Enterprise details: {list(enterprise_keys)} as a dictionary data structure only\n"
-            "3. Explanation for why this enterprise was selected\n"
+            f"1. Matching Enterprise details: {list(enterprise_keys)} as a dictionary data structure only\n"
+            "2. Explanation for why this enterprise was selected\n"
         )
 
         result = pdf_content({"query": match_prompt})
@@ -284,85 +329,9 @@ def summarise_the_pdf_and_match_the_enterprise(content: str) -> str:
         return result['result']
 
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"❌ Error during enterprise matching: {str(e)}"
 
-
-
-# ===== TOOL 2: Ask a Question Based on PDF =====
-# @mcp.tool(description=f"""
-#     Answers user queries based on the uploaded PDF content.
-#     - Performs semantic retrieval across the document using vector search.
-#     - Understands context-specific terms like scope, timelines, materials, and locations.
-#     - Supports natural language queries and provides accurate, grounded answers.
-#     - Returns: a clear and contextually accurate answer based on the document content.
-# """)
-# def ask_question(question: str) -> str:
-#     global pdf_content
-#     if not pdf_content:
-#         return "❌ No PDF content available. Please upload a PDF first."
-
-#     try:
-#         result = pdf_content({"query": question})
-#         return f"✅ Answer: {result['result']}\n"
-
-#     except Exception as e:
-#         return f"❌ Error while answering: {str(e)}"
-
-# ===== TOOL 3: Generate Quotation Template =====
-# @mcp.tool()
-# def create_quotation_for_the_document():
-#     if not qa_chain:
-#         return "❌ No PDF content available. Please upload a PDF first."
-
-#     quotation = {
-#         "company_details": {
-#             "name": "", "location": "", "email": "", "phone": "",
-#             "certifications": []
-#         },
-#         "executive_summary": "",
-#         "scope_of_work": [{"product code": "", "quantity": 0, "notes": ""}],
-#         "company_capabilities": [],
-#         "estimated_timeline": "",
-#         "payment_terms": {"advance_percent": 0, "on_delivery_percent": 0},
-#         "featured_products": [{"name": "", "description": "", "price": 0.0}]
-#     }
-
-#     global result_text, pdf_content
-#     match = re.search(r'{.*?}', result_text, re.DOTALL)
-#     if not match:
-#         raise ValueError("No dictionary found in the text")
-
-#     dict_str = match.group(0)
-#     fixed = re.sub(r'"\s*\n\s*([^"])"', r' \1', dict_str)
-#     fixed = fixed.replace('\n', ' ')
-#     details = ast.literal_eval(fixed)
-
-#     # Step 1: Get catalog data
-#     enterprise_price_list = get_enterprise_catalog_data(details["code"])
-#     # print(enterprise_price_list)
-
-#     # Step 2: Chunk it
-#     catalog_chain = chunking(str(enterprise_price_list))
-
-#     # Step 3: Extract RFP requirements from PDF QA chain
-#     rfp_summary_prompt = "Summarize the RFP requirements."
-#     rfp_info = pdf_content({"query": rfp_summary_prompt})["result"]
-
-#     # Step 4: Query catalog for matching products
-#     catalog_query_prompt = f"Based on these requirements:\n{rfp_info}\n\nList matching products from the catalog."
-#     catalog_response = catalog_chain({"query": catalog_query_prompt})["result"]
-
-#     # Step 5: Fill in quotation
-#     fill_prompt = (
-#         f"Here is a quotation template:\n{json.dumps(quotation)}\n\n"
-#         f"Use the following RFP requirements:\n{rfp_info}\n\n"
-#         f"And the following product catalog entries:\n{catalog_response}\n\n"
-#         f"Now populate the quotation with all available information. Use the original template format."
-#     )
-
-#     result = llm.invoke(fill_prompt)
-#     return result
-
+# ===== TOOL 3: create quotation =====
 @mcp.tool(description="use articraft and view as html page with effective designs and don't include warranty information, additional data apart from the response.")
 def create_quotation_for_the_document():
 
@@ -372,41 +341,36 @@ def create_quotation_for_the_document():
         return "❌ No PDF content available. Please upload a PDF first."
 
     quotation = {
-        "company_details": {
-            "name": "",
-            "location": "",
-            "email": "",
-            "phone": "",
-            "certifications": [
-                # e.g., "ISO 9001:2015", "BIFMA Certified Products"
-            ]
-        },
-        "executive_summary": "",
-        "scope_of_work": [
-            {
-                "product code":"",
-                "description": "",
-                "quantity": 0,
-                "unit price":0,
-                "amount":0
-            }
-        ],
-        "company_capabilities": [],
-        "estimated_timeline": "",
-        # "payment_terms": {
-        #     "advance_percent": 0,
-        #     "on_delivery_percent": 0
-        # },
-        "featured_products": [
-            {
-                "name": "",
-                "description": "",
-                "price": 0.0
-            }
-        ]
+    "header": {
+        "title": "",
+        "recipient": "",
+        "rfp_number": "",
+        "date": "",
+        "submitted_by": ""
+    },
+    "furniture_items_and_pricing": [
+        {
+            "product code": "",
+            "product description": "",
+            "quantity": 0,
+            "unit price": 0.0,
+            "total price": 0.0
+        }
+    ],
+    
+    "project_timeline": [
+        {
+            "milestone": "",
+            "date": ""
+        }
+    ],
+    "submission_details": {
+        "contact_email": "",
+        "email_subject": ""
     }
+}
 
-    global result_text,pdf_content
+    global result_text,pdf_content,content
     match = re.search(r'{.*?}', result_text, re.DOTALL)
     if not match:
         raise ValueError("No dictionary found in the text")
@@ -420,12 +384,33 @@ def create_quotation_for_the_document():
     details = ast.literal_eval(fixed)
 
     enterprise_price_list=get_enterprise_catalog_data(details["code"])
-    print(enterprise_price_list)
+    # print(enterprise_price_list)
 
     quotation_fill_prompt = (
-        f"Using {pdf_content} get the product details from {chunking(str(enterprise_price_list))} and fill the following quotation template: {json.dumps(quotation)}. without price"
-        "Fill in only available values and leave the rest empty or None."
-    )
+    f"You are given two pieces of information:\n\n"
+    # f"1. A summary of a furniture RFP:\n{pdf_summary}\n\n"
+    f"1. Content of the furniture RFP:\n{content}\n\n"
+    f"2. A product catalog in this format:\n"
+    f'{{\n  "product_code": ["description", unit_price]\n}}\n\n'
+    f"Here is the actual product catalog (as a JSON dictionary):\n{json.dumps(enterprise_price_list, indent=2)}\n\n"
+    
+    f"Your task:\n"
+    # f"- Go through each furniture item mentioned in the RFP summary.\n"
+    f"- Go through each furniture item mentioned in the RFP content.\n"
+    f"- Match each requirement with the closest product in the catalog **based on product description**.\n"
+    f"- Only fill in an item if there is a clear match.\n"
+    f"- Do not guess or estimate any value.\n"
+    f"- For each matched item:\n"
+    f"  - Set 'product code' to the key from the catalog.\n"
+    f"  - Set 'product description' to the value[0] (description).\n"
+    f"  - Use the quantity from the RFP.\n"
+    f"  - Use unit price from value[1].\n"
+    f"  - Calculate total price = quantity × unit price.\n"
+    f"- Always extract the product code from the dictionary key.\n"
+    f"- Always extract the unit price from the second element (index 1) of the value list.\n"
+    f"- Leave unmatched fields as empty strings or null.\n\n"
+    f"Return the result as a JSON object matching this structure:\n{json.dumps(quotation)}"
+)
 
     result = pdf_content({"query": quotation_fill_prompt})
     # return enterprise_price_list
@@ -437,62 +422,5 @@ if __name__ == "__main__":
     try:
         print("✅ Starting MCP Server...")
         mcp.run()
-#         print(summarise_the_pdf_and_match_the_enterprise("""
-# {
-#   `content`: `Request for Proposal (RFP) for Office Furniture
-# RFP Title: Hunton Andrews Kurth LLP
-# RFP Number: 20037-2025-001
-# Issue Date: July 28, 2025
-# Proposal Due Date: August 15, 2025
-
-# Client: Hunton Andrews Kurth LLP (Law firm)
-# Location: 2200 Pennsylvania Avenue NW, Washington, DC
-# Contact: procurement@organization.org
-
-# Project Scope:
-# - Supply, deliver, and install office furniture for new headquarters
-# - Target departments: administration, HR, finance, executive offices
-# - Requirements: ergonomic, durable, aesthetically consistent furniture
-
-# Furniture Requirements:
-# - Office Desks: 50 units (Credenza, Storm Sky Color, 72\"W x 18\"D)
-# - Single Standing Desks: 40 units (Cushion, Snow Day Color, 60\"W x 30\"D)
-# - Executive Desks: 30 units (Harbor Steel Color, Credenza, 72\"W x 18\"D)
-# - L-shaped Desks: 30 units (Snow Day Color, 60\"W x 30\"D)
-# Total: 150 furniture pieces
-
-# Manufacturer Criteria:
-# - Must be legally registered in the United States
-# - Must have physical U.S. business address
-# - Must offer ready-to-order collections
-# - Must demonstrate high-quality craftsmanship
-# - Must show innovation in office furniture solutions
-
-# Services Required:
-# - Supply of furniture per specifications
-# - Delivery to designated site
-# - Installation and setup
-# - Removal of packaging debris
-# - Warranty and support services
-
-# Evaluation Criteria:
-# - Price competitiveness
-# - Quality and durability
-# - Experience and references
-# - Delivery and installation plan
-# - Warranty and after-sales service
-# - Responsiveness to RFP
-
-# Timeline:
-# - RFP Issued: July 28, 2025
-# - Questions Deadline: August 5, 2025
-# - Proposal Deadline: August 15, 2025
-# - Vendor Selection: August 25, 2025
-# - Project Start: September 5, 2025
-# - Completion: October 15, 2025
-
-# Budget: Not specified in RFP`
-# }"""))
-#         print(create_quotation_for_the_document())
     except Exception as ex:
         print(f"❌ MCP Server failed: {str(ex)}")
