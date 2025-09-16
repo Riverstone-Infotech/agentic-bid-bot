@@ -2,6 +2,7 @@
 python-dotenv
 fastapi
 uvicorn
+uv
 
 # LangChain and vector store
 langchain
@@ -12,20 +13,42 @@ chromadb
 
 # Embeddings and LLM
 openai
+langchain-openai
 transformers
 sentence-transformers
 
-# PDF Loader
+# PDF Loader & Processing
 PyMuPDF
+PyPDF2
+reportlab
 
 # Claude function calling (via your MCP server)
 mcp 
 
-# HTTP requests
+# HTTP requests & async
 requests
+aiohttp
 
+# NLP and ML
 numpy==1.24.4
+scikit-learn
+joblib
+rapidfuzz
+pandas
 
-sentence-transformers
+# Web automation & scraping
+playwright
+beautifulsoup4
 
-uv
+# Image & visualization
+Pillow
+
+# Template rendering
+jinja2
+
+# Email handling (MIME already in stdlib, but keeping smtplib deps safe)
+pdfplumber
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2

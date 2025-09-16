@@ -1,0 +1,74 @@
+{
+  "474c5d7aafd4aa6da6ad0a948a98c615c8f20581593c64ff607aa000f4d02735": {
+    "matching_enterprise": [
+      "BLD",
+      "SCH"
+    ],
+    "reason": {
+      "BLD": [
+        "unmatched quality",
+        "craftsmanship"
+      ],
+      "SCH": [
+        "durable",
+        "practical"
+      ]
+    }
+  },
+  "43c04c84646f9056b60fd381e325ea326767843f11cfb9565583339b5a34dd02": {
+    "matching_enterprise": [
+      "BLD"
+    ],
+    "reason": {
+      "BLD": [
+        "office furniture"
+      ]
+    }
+  },
+  "ed5ccc197b4251f70e2fb9d3ee7810d7495968f1a88c2c488b783c0967901252": {
+    "matching_enterprise": [
+      "BLD",
+      "SEI"
+    ],
+    "reason": {
+      "BLD": [
+        "office furniture solutions"
+      ],
+      "SEI": [
+        "ergonomic chairs",
+        "businesses and government offices"
+      ]
+    }
+  },
+  "11dadf02b3ffdba62f844b7997ec6cb848e00a84369e9c146663bddfa763db1f": {
+    "matching_enterprise": [
+      "BLD",
+      "SCH"
+    ],
+    "reason": {
+      "BLD": [
+        "unmatched quality",
+        "craftsmanship"
+      ],
+      "SCH": [
+        "durable",
+        "practical"
+      ]
+    }
+  },
+  "a7aa177ba7b1c5fda89941d44b64e765c9d909815607210a3841df47209707bc": {
+    "matching_enterprise": [
+      "CRA",
+      "CRT"
+    ],
+    "reason": {
+      "CRA": [
+        "chairs and stools for labs, technical industries"
+      ],
+      "CRT": [
+        "highly durable",
+        "furniture"
+      ]
+    }
+  }
+}
