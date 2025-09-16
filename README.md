@@ -38,7 +38,7 @@ mkdir -p ~/bidding
 cd ~/bidding
 
 2. Clone the Repository
-git clone -b develop https://github.com/rohan-riverstone/Bidding-Agentic-AI.git
+repo link - 
 cd Bidding-Agentic-AI
 
 3. Install Dependencies
