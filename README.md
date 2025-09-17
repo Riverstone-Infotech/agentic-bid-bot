@@ -24,31 +24,36 @@ Choose a folder where the project will be installed:
 ```
 mkdir -p ~/bidding
 cd ~/bidding
+```
 2. Clone the Repository
-
+```
 git clone [git repo]
 cd Bidding-Agentic-AI
+```
 3. Install Dependencies
 Make sure you have Python 3.11+ installed:
-
+```
 pip install -r requirements.txt
+```
 4. Install Agents
 Each agent (e.g., quotation_tool, summary_tool) has its own main.py.
 Install them using:
-
+```
 cd quotation_tool
 uv run mcp install main.py
 
 cd ../summary_tool
 uv run mcp install main.py
+```
 After installation, verify that the agents appear inside your claude_config.json.
 
 Usage
 Start Claude Desktop, and the installed MCP tools (quotation_tool, summary_tool, etc.) will be available automatically.
 
 Example (if running directly):
-
+```
 uv run mcp serve quotation_tool/main.py
+```
 You can then interact with the tools inside Claude Desktop to:
 
 Parse an RFP
