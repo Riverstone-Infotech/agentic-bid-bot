@@ -26,7 +26,7 @@ mkdir -p ~/bidding
 cd ~/bidding
 2. Clone the Repository
 
-git clone https://github.com/your-username/Bidding-Agentic-AI.git
+git clone [git repo]
 cd Bidding-Agentic-AI
 3. Install Dependencies
 Make sure you have Python 3.11+ installed:
