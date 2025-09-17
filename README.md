@@ -30,7 +30,6 @@ cd ~/bidding
 
 #### 2. Clone the Repository  
 ```bash
-git clone https://github.com/rohan-riverstone/Bidding-Agentic-AI.git
 cd Bidding-Agentic-AI
 ```
 
@@ -86,7 +85,7 @@ This will:
 
 ---
 
-### Important Notes (Hindrances / Caveats)  
+### Important Notes (<span style="color:red">Hindrances / Caveats</span>)  
 
 | Requirement      | Details |
 |------------------|---------|
@@ -110,3 +109,5 @@ You can then interact with them in Claude Desktop to:
 - **Python 3.11+**  
 - **Claude Desktop installed**  
 - **Access to a GraphQL endpoint** (for enterprise product catalogs)  
+
+### For _____ keys contact <span style="color: #1D3B53;font-weight: bold;text-shadow:-1px -1px 0 #fff, 1px -1px 0 #fff,-1px  1px 0 #fff, 1px  1px 0 #fff;">Riverstone support team</span>
