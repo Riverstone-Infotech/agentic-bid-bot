@@ -139,7 +139,7 @@ class data_logger:
         else:
             logs[rfp_id]["tools"]["email"]["result"]["submission_email"] = result
         self._save_logs(logs)
-        self.logger.info(f"📧 Email logged for RFP {rfp_id} → {list(rfq_email_data.keys())}")
+        self.logger.info(f"📧 Email logged for RFP {rfp_id}")
         return rfp_id
 
     def get_rfp_data(self, rfp_id: str) -> dict:

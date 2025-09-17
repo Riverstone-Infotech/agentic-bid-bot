@@ -201,7 +201,7 @@ async def Submit_the_final_quotation(rfp_id: str, email_address: str):
                     for codes in logs_data[rfp_id]["tools"]["matching"]["result"]["availability"][enterprise]
                 ]
                 
-                merged_cutsheet_bytes = None # await get_cutsheet_optimized(cutsheet, products)
+                merged_cutsheet_bytes = await get_cutsheet_optimized(cutsheet, products)
                 if merged_cutsheet_bytes:
                     cutsheet_pdfs.append(merged_cutsheet_bytes)
 
@@ -260,7 +260,7 @@ Sincerely,
 
         # ====== Build & Send Email ======
         email_msg = prepare_email(
-            to_email="rohan@riverstonetech.in", #email_address,
+            to_email=email_address,
             subject=f"{last_json_data['Client Information']['RFP Number']} - Furniture Quote Submission",
             message=message,
             pdf_bytes=merged_cutsheet,
@@ -331,7 +331,7 @@ Best regards,
 """
                 to_email = api.get_enterprise_list([enterprise])['data']['getEnterpriseListing']['edges'][0]['node']['email']
                 email_msg = prepare_email(
-                    to_email= "rohan@riverstonetech.in", #to_email,
+                    to_email= to_email,
                     subject=f"{json_data['Quotation Details']['Quotation ID']} - Request For Quotation - {json_data['Enterprise Information']['name']}",
                     message=message,
                     pdf_bytes=merged_pdf_bytes,
