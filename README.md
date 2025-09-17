@@ -54,6 +54,10 @@ Example (if running directly):
 ```
 uv run mcp serve quotation_tool/main.py
 ```
+
+after installing your agents in the claude this is how your search and tools window looks
+<img width="772" height="656" alt="image" src="https://github.com/user-attachments/assets/d29f1574-7d54-4c41-aa8c-f13f3ab32a31" />
+
 You can then interact with the tools inside Claude Desktop to:
 
 Parse an RFP
