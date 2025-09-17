@@ -62,9 +62,9 @@ Match products from an enterprise catalog
 
 Generate quotations in JSON/HTML format
 
-Technical Requirements
-Python 3.11+
+**Technical Requirements:**
+- Python 3.11+
 
-Claude Desktop installed
+- Claude Desktop installed
 
-Access to a GraphQL endpoint (for enterprise product catalogs)
+- Access to a GraphQL endpoint (for enterprise product catalogs)
