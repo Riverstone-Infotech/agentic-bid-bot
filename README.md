@@ -1,20 +1,20 @@
-Bidding Agentic AI
+**Bidding Agentic AI**
 
 An Agentic AI system designed to analyze RFPs (Request for Proposals), match them with enterprise product catalogs, and generate structured quotations automatically.
 
-This project integrates:
+**This project integrates:**
 
-📄 PDF/Document Parsing
+PDF/Document Parsing
 
-📊 Product Matching via Vector Similarity (TF-IDF / Embeddings)
+Product Matching via Vector Similarity (TF-IDF / Embeddings)
 
-🤖 LLM-powered Quotation Generation
+LLM-powered Quotation Generation
 
-⚡ FastMCP-based Tooling
+FastMCP-based Tooling
 
-🌐 GraphQL Enterprise Catalog Integration
+GraphQL Enterprise Catalog Integration
 
-🚀 Features
+Features
 
 Automated RFP Parsing → Extracts requirements and specifications.
 
@@ -26,7 +26,7 @@ Multi-Enterprise Support → Generates quotations per enterprise.
 
 Token Optimization → Reduces cost by filtering catalogs and trimming RFPs.
 
-🛠️ Installation
+**Installation**
 
 Follow these steps to set up the project:
 
@@ -53,6 +53,9 @@ Each tool is located in its own folder (e.g., quotation_tool, summary_tool).
 You can install them with:
 
 uv run mcp install main.py
-
-
 Run this inside each tool’s folder.
+
+
+****Technical requirements:****
+- Install claude desktop
+- Use python 3.11 or higher
