@@ -43,19 +43,20 @@ cd Bidding-Agentic-AI
 
 3. Install Dependencies
 
-Make sure you have Python 3.10+ installed. Then run:
+Make sure you have Python 3.11+ installed. Then run:
 
 pip install -r requirements.txt
 
-4. Install Tools (Optional)
+4. Install agents
 
-Each tool is located in its own folder (e.g., quotation_tool, summary_tool).
+Each agent is located in its own folder (e.g., quotation_tool, summary_tool).
 You can install them with:
 
 uv run mcp install main.py
-Run this inside each tool’s folder.
+Run this inside each agent’s folder.
+
+after this step do check whether the agents have install propoerly in the cluade config json file.
 
 
 ****Technical requirements:****
 - Install claude desktop
-- Use python 3.11 or higher
