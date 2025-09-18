@@ -119,6 +119,8 @@ You can then interact with them in Claude Desktop to:
 - Match products from an enterprise catalog  
 - Generate quotations in **HTML format**  
 
+kindly refer the .sample_env for actual .env file.
+
 ---
 
 ## Technical Requirements  
