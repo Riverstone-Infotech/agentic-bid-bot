@@ -125,7 +125,7 @@ def summarize_pdf_content(
         else:
             json_data = {}
 
-        # Initialize placeholders for later stages
+        ## Initialize placeholders for later stages
         json_data.setdefault("quotation", {})
         json_data.setdefault("cutsheet", {})
 
