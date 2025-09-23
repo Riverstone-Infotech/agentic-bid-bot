@@ -392,11 +392,11 @@ async def create_quotation_for_the_document(
                 f.write(html_str)
 
             # Open only once (subsequent updates just overwrite the file)
-            if not getattr(create_quotation_for_the_document, "opened", {}):
-                create_quotation_for_the_document.opened = {}
-            if enterprise_code not in create_quotation_for_the_document.opened:
-                webbrowser.open(f"file://{temp_path}")
-                create_quotation_for_the_document.opened[enterprise_code] = True
+            # if not getattr(create_quotation_for_the_document, "opened", {}):
+            #     create_quotation_for_the_document.opened = {}
+            # if enterprise_code not in create_quotation_for_the_document.opened:
+            webbrowser.open(f"file://{temp_path}")
+                # create_quotation_for_the_document.opened[enterprise_code] = True
             time.sleep(2)
         except Exception as e:
             print(f" Preview failed for {enterprise_code}: {e}")
