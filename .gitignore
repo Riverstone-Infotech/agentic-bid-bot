@@ -10,3 +10,5 @@ quotation_tool/__pycache__/
 proposal_tool/__pycache__/
 send_email_tool/__pycache__/
 views/__pycache__/
+output files/
+product_embeddings.pkl
