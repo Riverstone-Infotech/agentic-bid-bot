@@ -134,22 +134,30 @@ def clean_string(text: str) -> str:
     allowed_pattern = r"[^a-zA-Z0-9\s.,!?;:'\"()-]"
     cleaned_text = re.sub(allowed_pattern, "", text)
     return cleaned_text
-    
+
 CACHE_FILE = "enterprise_match_cache.json"
 
 def _cache_path():
-    # store cache next to this file
-    return os.path.join(os.path.dirname(__file__), CACHE_FILE)
+    # Use current working directory as fallback
+    base_dir = os.path.dirname(__file__) if '__file__' in globals() else os.getcwd()
+    return os.path.join(base_dir, CACHE_FILE)
+
 
 def load_cache():
     path = _cache_path()
     if not os.path.exists(path):
-        return {}
+        # create an empty JSON file
+        with open(path, "w") as f:
+            json.dump({}, f)
     try:
         with open(path, "r") as f:
             raw = json.load(f)
-            # Ensure keys are strings
             return {str(k): v for k, v in raw.items()}
+    except json.JSONDecodeError:
+        # If JSON is invalid, reset
+        with open(path, "w") as f:
+            json.dump({}, f)
+        return {}
     except Exception:
         return {}
 

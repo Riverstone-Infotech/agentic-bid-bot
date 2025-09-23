@@ -22,9 +22,17 @@ def run_command(cmd, cwd=None):
 # ✅ 2. Install requirements
 repo_path = os.path.dirname(os.path.abspath(__file__))
 requirements_file = os.path.join(repo_path, "requirements.txt")
+# ✅ 2a. Create virtual environment if not exists
+venv_path = os.path.join(repo_path, ".venv")
+if not os.path.exists(venv_path):
+    run_command(f"{sys.executable} -m venv .venv", cwd=repo_path)
+    print("✅ Created virtual environment at .venv")
+else:
+    print("✅ Virtual environment already exists at .venv")
 
+run_command(f"source {venv_path}/bin/activate", repo_path)
 if os.path.exists(requirements_file):
-    run_command(f"{sys.executable} -m pip install -r requirements.txt", cwd=repo_path)
+    run_command(f"uv pip install -r requirements.txt", cwd=repo_path)
 else:
     print("⚠️ No requirements.txt found in repo.")
 
@@ -95,13 +103,17 @@ else:
 tools = []
 for root, dirs, files in os.walk(repo_path):
     for dir_name in dirs:
-        if 'tool' in dir_name.lower():
-            tools.append(os.path.join(root, dir_name))  # full path
+        tool_path = os.path.join(root, dir_name)
+        main_file = os.path.join(tool_path, "main.py")
+
+        if "_tool" in dir_name.lower() and os.path.isfile(main_file):
+            tools.append(tool_path)
 
 if not tools:
-    print("⚠️ No tool directories found in the repo.")
+    print("⚠️ No tool directories with main.py found in the repo.")
 else:
     for tool_path in tools:
         run_command("uv run mcp install main.py", cwd=tool_path)
+
 
 print("\n🎉 Installation finished successfully!")

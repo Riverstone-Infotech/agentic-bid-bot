@@ -24,7 +24,7 @@ mcp = FastMCP("summarize the pdf")
 # add root path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from systems.llm_config import chunking
+from systems.llm_config import chunking, llm
 from logs.data_logging import data_logger
 
 log = data_logger()
@@ -53,13 +53,12 @@ def _cache_path():
 def load_cache():
     path = _cache_path()
     if not os.path.exists(path):
-        return []
+        return {"names": []}
     try:
         with open(path, "r") as f:
-            raw = json.load(f)
-            return raw
+            return json.load(f)
     except Exception:
-        return []
+        return {"names": []}
 
 def save_cache(cache_list):
     path = _cache_path()
@@ -91,14 +90,15 @@ def normalize_org_name(input_name: str) -> str:
     return input_name
     
 @mcp.tool(description="""
-Extracts all necessary information from a furniture RFP PDF for preparing a vendor bid.
+Analyzes any RFP PDF and extracts all information necessary for preparing a vendor bid.
 
-Covers: general info, dates, scope, furniture specifications, eligibility, 
-evaluation criteria, financial terms, submission instructions, contacts, 
-special conditions, annexes, and any other relevant details.
+The AI should carefully read the document, acting as an expert bidder. It should understand the purpose of the RFP, the project context, the requested products or services, the timelines, conditions, requirements, evaluation criteria, financial instructions, submission processes, contacts, annexes, and any other relevant information that could impact a bid. 
 
-Dates must be normalized to "Month DD, YYYY".  
-Runs automatically on PDF upload, even without user input.
+It should consider both explicit and implicit details, including anything that might influence eligibility, compliance, technical specifications, or financial decisions. Even if information is scattered, presented in tables, embedded in text, or in unusual formats, it should be captured. Dates should be normalized to 'Month DD, YYYY'. 
+
+⚠️ Important: The extraction must be **comprehensive and meticulous**. No critical information should be left out, misinterpreted, or ignored. The AI should aim to produce a complete picture that would allow a vendor to fully understand the RFP requirements and prepare a compliant and competitive bid.  
+
+This tool runs automatically on PDF upload, requiring no user input.
 """)
 
 def summarize_pdf_content(
@@ -133,30 +133,24 @@ def summarize_pdf_content(
             json.dump(json_data, f, indent=4)
 
         # Prompt for summarization
-        summarization_prompt = """
-Analyze the furniture RFP and return ONLY valid JSON:
+        summarization_prompt = f"""
+Read the following document carefully:
 
-{
-  "executive_summary": "5–7 sentences covering project background, scope, objectives, key dates, requirements, and evaluation approach.",
-  "important_dates": [],
-  "evaluation_criteria": [],
-  "financial_terms": {},
-  "contact_info": [],
-  "furniture_requirements": [],
-  "other_requirements": {}
-}
+{content}
 
-Rules:
-- Only include fields present in the RFP; else leave empty.
-- Executive summary must be a full paragraph, not less than 5 sentences.
-- Dates → "Month DD, YYYY".
-- Be concise and factual, no extra text outside JSON.
+Produce a **well-structured and detailed summary**. 
+- Organize the summary into clear sections with informative headings (e.g., Overview, Key Dates and Deadlines, Requirements, Instructions, Evaluation, Key Terms, etc.).
+- Under each section, provide bullet points or short paragraphs that capture all important details, dates, numbers, and conditions.
+- Preserve all essential information and context, but present it in a concise, professional, and easy-to-read format.
+- Do not shorten too much; the summary should be comprehensive, not just a brief outline.
 """
 
+
+
         # Run through LLM with chunking
-        t = chunking(content)
-        result = t.invoke({"query": summarization_prompt})
-        summary = result.get("result", "")
+        # t = chunking(content)
+        result = llm.invoke(summarization_prompt)
+        summary = result.content #.get("result", "")
         
 
         # Log extracted summary with raw text
