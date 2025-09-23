@@ -1,17 +1,15 @@
-import json
-import os
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+import json
 import sys
-import tempfile
-import webbrowser
-import random
-from datetime import datetime, date
-from typing import Dict, List, Any
-from rapidfuzz import fuzz
+import os
 import warnings
 import logging
-import time
+import tempfile
+import webbrowser
+from datetime import date
+from bs4 import BeautifulSoup, Tag, NavigableString
+import re
+from rapidfuzz import fuzz
 
 # Silence noisy logs
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -21,539 +19,369 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("chromadb").setLevel(logging.ERROR)
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from views import template
-from systems.api_calls import api_calls
+
 from logs.data_logging import data_logger
-from systems.llm_config import llm
+from views import template
 from systems.pdf_tools import html_to_pdf
-
-# Load from parent .env
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
-price_list_url = os.getenv("ENTERPRISE_PRISE_GRAPHQL_URL")
-
-mcp = FastMCP("create quotation")
-api = api_calls()
-log = data_logger()
+from systems.llm_config import proposal_change
 
 
-def generate_quote_id(prefix: str, year: int = None, sequence: int = None) -> str:
-    """Generate unique quotation ID."""
-    if year is None:
-        year = datetime.now().year
-    if sequence is None:
-        sequence = random.randint(1, 999)
-    return f"{prefix}-Q-{year}-{str(sequence).zfill(3)}"
+log=data_logger()
 
+mcp = FastMCP("Create Proposal")
 
-def get_html_content_path() -> str:
-    """Return path to shared HTML content JSON."""
-    return os.path.join(tempfile.gettempdir(), "html_content.json")
+def parse_html(html_content):
+    return BeautifulSoup(html_content, "html.parser")
 
-
-def filter_catalog_by_similarity(catalog: dict, requirements: List[str]) -> List[Dict[str, Any]]:
-    """Filter enterprise catalog for matched product codes."""
-    lst = (
-        catalog.get("data", {})
-        .get("getEnterpriseListing", {})
-        .get("edges", [])[0]
-        .get("node", {})
-        .get("children", [])[0]
-        .get("children", [])
-    )
-    for section in lst:
-        if section.get("key") == "Product":
-            catalog = section.get("children", [])
-    matched_products = []
-    for req in requirements:
-        for item in catalog:
-            if item["code"] == req:
-                matched_products.append({
-                    "code": item.get("code"),
-                    "description": item.get("description"),
-                    "unit_price": item.get("BasePrice", [{}])[0].get("price", 0)
-                })
-                break
-    return matched_products
-
-def extract_field_and_value(query: str):
-    prompt = f"""
-    You are a JSON generator for editing quotations.
-    Parse the user query into a structured JSON.
-
-    User query: "{query}"
-
-    Rules:
-    - "field": what is being changed ("quantity", "unit price","total amount", "terms and conditions", "product").
-    - "context": product code, description, or "terms and conditions" index if relevant.
-    - "value": 
-        * number (for quantities or prices)
-        * null (for remove operations)
-        * string (if replacing text in terms)
-    - "mode": one of ["SET", "ADD", "SUBTRACT", "REMOVE"].
-
-    Always return valid JSON:
-    {{
-        "field": "...",     
-        "context": "...",   # use null unless user explicitly specifies index/last
-        "value": "...",     # the actual text/number to insert or update
-        "mode": "SET"|"ADD"|"REMOVE"|"SUBTRACT"
-    }}
-    """
-    content = llm.invoke(prompt)
-    try:
-        data = json.loads(content.content.strip())
-    except Exception as e:
-        raise ValueError(f"❌ extract_field_and_value: Failed to parse LLM response: {content.content}") from e
-
-    return data['field'], data['context'], data['value'], data['mode']
-
-
-def find_update_path_in_json(data, field, context, new_value, threshold=90):
-    """
-    Traverse JSON and return the best path as a list,
-    or return "AMBIGUOUS" with options if duplicates or conflicts exist.
-    """
-
-    def normalize(s):
-        return str(s).strip().lower() if s else ""
-
-    field_norm = normalize(field)
-    context_norm = normalize(context)
-
-    # -----------------------------
-    # Step 1: Look inside furniture_items_and_pricing
-    # -----------------------------
-    if "furniture_items_and_pricing" in data:
-        items = data["furniture_items_and_pricing"]
-
-        # --- Exact product code match ---
-        exact_matches = [
-            (idx, item) for idx, item in enumerate(items)
-            if normalize(item.get("product code")) == context_norm
-        ]
-        if len(exact_matches) == 1:
-            idx, _ = exact_matches[0]
-            return ["furniture_items_and_pricing", idx, field], new_value
-        elif len(exact_matches) > 1:
-            return "AMBIGUOUS", [m[1].get("description", "") for m in exact_matches]
-
-        # --- Exact description match ---
-        exact_desc_matches = [
-            (idx, item) for idx, item in enumerate(items)
-            if normalize(item.get("description")) == context_norm
-        ]
-        if len(exact_desc_matches) == 1:
-            idx, _ = exact_desc_matches[0]
-            return ["furniture_items_and_pricing", idx, field], new_value
-        elif len(exact_desc_matches) > 1:
-            return "AMBIGUOUS", [m[1].get("product code", "") for m in exact_desc_matches]
-
-    # -----------------------------
-    # Step 2: Fuzzy fallback (only if no exact match found)
-    # -----------------------------
+def extract_candidate_blocks(soup, tags=("tr","div","section","footer","header","p","span","td")):
     candidates = []
+    for tag in soup.find_all(tags):
+        text = tag.get_text(" ", strip=True)
+        html = str(tag)
+        if text:
+            candidates.append({"text": text, "html": html, "tag": tag})
+    return candidates
 
-    def recurse(obj, path=None):
-        if path is None:
-            path = []
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                current_path = path + [k]
-                if fuzz.partial_ratio(normalize(k), field_norm) > threshold:
-                    candidates.append((current_path, v, obj, k))
-                recurse(v, current_path)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                recurse(item, path + [i])
+def find_target_block(prompt, candidates, threshold=50):
+    best_score = 0
+    best_block = None
+    for c in candidates:
+        score = fuzz.partial_ratio(prompt.lower(), c["text"].lower())
+        if score > best_score:
+            best_score = score
+            best_block = c
 
-    recurse(data)
+    if best_block and best_score >= threshold:
+        tag = best_block["tag"]
+        if tag.name == "td" and tag.parent and tag.parent.name == "tr":
+            return {"text": tag.parent.get_text(" ", strip=True), "html": str(tag.parent), "tag": tag.parent}
+        return best_block
+    return None
 
-    scored = []
-    for path, value, parent, key in candidates:
-        if isinstance(parent, dict):
-            description = (
-                parent.get("description", "")
-                or parent.get("product code", "")
-                or parent.get("name", "")
-            )
-            score = fuzz.partial_ratio(normalize(description), context_norm)
-            scored.append((score, path, parent, key, description))
-
-    if not scored:
-        return None, None
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # If multiple almost equal, mark ambiguous
-    top_score = scored[0][0]
-    ambiguous = [s for s in scored if s[0] >= top_score - 5 and s[0] >= threshold]
-
-    if len(ambiguous) > 1:
-        return "AMBIGUOUS", [a[4] for a in ambiguous]
-
-    # Otherwise safe to update
-    _, path, parent, key, desc = scored[0]
-    return path, new_value
-
-def update_value(data: dict, field: str, context: str, value, mode: str):
-    """
-    Update JSON data based on extracted field, context, and value.
-    """
-    if field not in data:
-        raise KeyError(f"❌ Field '{field}' not found in quotation JSON")
-
-    # Handle list fields
-    if isinstance(data[field], list):
-        if mode == "SET":
-            data[field] = [value]   # overwrite entire list
-        elif mode == "ADD":
-            data[field].append(value)  # append new value
-        else:
-            raise ValueError(f"❌ Unsupported mode: {mode}")
-
-    # Handle scalar fields (string, number)
-    else:
-        if mode == "SET":
-            data[field] = value
-        elif mode == "ADD":
-            # works if numeric
-            if isinstance(data[field], (int, float)) and isinstance(value, (int, float)):
-                data[field] += value
-            else:
-                # fallback: append as string
-                data[field] = f"{data[field]} {value}"
-        else:
-            raise ValueError(f"❌ Unsupported mode: {mode}")
-
-    return data
+def save_updated_html(rfp_id, html_content):
+    proposal_temp_path = os.path.join(tempfile.gettempdir(), "proposal.html")
+    with open(proposal_temp_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+    return proposal_temp_path
 
 @mcp.tool(description="""
-When user ask for prepare quoatation or RFQ or Request For Quotation for manufacturers
-
-Inputs:
-- 'rfp_id': RFP identifier in logging system.
-- 'rfp_number': The RFP number.
-- 'content': The full RFP text.
-- 'enterprise_availability_list': Dict where keys = enterprise codes, values = list of matched product codes.
-- 'Terms_and_Conditions': List of exact terms from the RFP.
-- 'reason_to_choose_the_enterprise': Dict mapping enterprise codes → list of reasons.
-- 'project_timeline': List of milestones as { "milestone": "date" }.
-- 'due_date': Proposal due date.
-- enterprise_availability_list will be in this structure {'enterprise_code' : [{'product_code':'product_code (returns from enterprise match)','description':'description from the document','qty':integer}]}
-- if the phone number and fax number are not specified then leave the value as ''
+Display the proposal when user asks to display or prepare a proposal.
 """)
-async def create_quotation_for_the_document(
-    rfp_id: str,
-    rfp_number: str,
-    enterprise_availability_list: dict,
-    project_timeline: List[dict],
-    due_date: str,
-    issue_date: str,
-    contact_person: str,
-    client_email: str,
-    client_address: str,
-    client_phone: str,
-    client_fax: str,
-) -> str:
-    """Create quotations for each enterprise with matched products (no LLM)."""
-    if isinstance(enterprise_availability_list, str):
-        try:
-            enterprise_availability_list = json.loads(enterprise_availability_list)
-        except Exception:
-            return "❌ Invalid enterprise_availability_list format."
+async def display_proposal(rfp_id: str) -> str:
+    """Render and display a saved proposal (from logs) as HTML and PDF."""
 
-    quotation_template = {}
-    quotation_json = {}
-    proposal_template = {}
-    proposal_json = {}
+    try:
+        # === Load JSON from logs ===
+        proposal_data = log._load_logs()[rfp_id]["tools"]["quotation"]["result"]["updated_result_json"]
 
-    for code, product_details in enterprise_availability_list.items():
-        if not product_details:
-            continue
+        # === Render HTML ===
+        proposal_html = template.render_proposal(
+            proposal_data,
+            today=date.today().strftime("%m/%d/%Y"),
+            basic=proposal_data[list(proposal_data.keys())[0]]
+        )
+        await html_to_pdf(proposal_html['template'], rfp_id, "proposal.pdf")
 
-        try:
-            # === STEP 1: Get product catalog ===
-            product_dict = api.get_enterprise_price_list([code])
+    except Exception as e:
+        return f"❌ Proposal rendering failed: {e}"
 
-            # === STEP 2: Filter catalog ===
-            matched_codes = [prod['product_code'] for prod in product_details]
-            filtered_catalog = filter_catalog_by_similarity(product_dict, matched_codes)
-
-            # === STEP 3: Prepare base quotation JSON ===
-            quotation = {
-                "Client Information": {
-                    "Company": "IOM Washington DC New Office Furniture, Electrical and Networking Services",
-                    "Location": "United States",  # simple extraction; could parse further from RFP
-                    "RFP Number": rfp_number,
-                    "Name": contact_person,
-                    "Address": client_address,
-                    "email": client_email,
-                    "phone":client_phone,
-                    "fax":client_fax
-
-                },
-                "Enterprise Information": {
-                    "contactName": "",
-                    "email": "",
-                    "name": "",
-                    "description":"",
-                    "address": "",
-                    "phoneNumber": "",
-                    "website": "",
-                    "code":""
-                },
-                "Quotation Details": {
-                    "Date": datetime.today().strftime("%B %d, %Y"),
-                    "Due Date": due_date,
-                    "Quotation ID": generate_quote_id(code),
-                    "Contact": "",
-                    "Issue date": issue_date
-                },
-                "furniture_items_and_pricing": [],
-                "project_timeline": project_timeline
-            }
-
-            # === STEP 4: Merge products (loop instead of LLM) ===
-            for req in product_details:
-                req_code = req["product_code"]
-                req_qty = req["qty"]
-
-                # find product info in filtered catalog
-                product_info = next((p for p in filtered_catalog if p["code"] == req_code), None)
-                if not product_info:
-                    continue
-
-                unit_price = product_info.get("unit_price", 0.0)
-                total_amount = req_qty * unit_price
-
-                quotation["furniture_items_and_pricing"].append({
-                    "product code": req_code,
-                    "RFP_description": req['description'],
-                    "description":product_info.get("description"),
-                    "quantity": req_qty,
-                    "unit price": unit_price,
-                    "total amount": total_amount
-                })
-
-            # === STEP 5: Fill Enterprise Information ===
-            enterprise_data = api.get_enterprise_list([code])
-            node = (
-                enterprise_data.get("data", {})
-                .get("getEnterpriseListing", {})
-                .get("edges", [{}])[0]
-                .get("node", {})
-            )
-
-            for field in ["contactName", "code", "email", "name", "address", "phoneNumber", "website","description"]:
-                quotation["Enterprise Information"][field] = node.get(field, "")
-
-            # === STEP 6: Render HTML ===
-            try:
-                temp_html = template.render_quotation(quotation, today=date.today().strftime("%m/%d/%Y"))
-                names = quotation["Enterprise Information"]["code"]
-                await html_to_pdf(temp_html, rfp_id, f"{names}.pdf")
-                
-                ent_temp_html = template.render_quotation_for_enterprise(quotation, today=date.today().strftime("%m/%d/%Y"))
-                ent_names = quotation["Enterprise Information"]["code"]
-                await html_to_pdf(ent_temp_html, rfp_id, f"{ent_names}_ent.pdf")
-            except Exception as render_err:
-                return f"❌ Template rendering failed: {render_err}"
-
-            quotation_template[code] = temp_html
-            quotation_json[code] = quotation
-            
-            
-
-        except Exception as e:
-            print(f" Error creating quotation for {code}: {e}")
-    
-    # === STEP 7: Save to shared html_content.json ===
+    # === Save to shared html_content.json ===
     path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     file_path = os.path.join(path, "html_content.json")
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            json_data = json.load(f)
-    else:
-        json_data = {}
 
-    json_data["quotation"] = quotation_template
-    json_data["updated_quotation"] = quotation_template
-
+    content = {"rfp_id": rfp_id, "proposal_html": proposal_html['template'], "proposal_json": proposal_data}
     with open(file_path, "w") as f:
-        json.dump(json_data, f, indent=4)
+        json.dump(content, f, indent=4)
 
-    # === STEP 8: Preview in browser ===
-    for enterprise_code, html_str in quotation_template.items():
-        try:
-            # Deterministic file name in temp dir
-            temp_path = os.path.join(tempfile.gettempdir(), f"quotation_{enterprise_code}.html")
-            with open(temp_path, "w", encoding="utf-8") as f:
-                f.write(html_str)
-
-            # Open only once (subsequent updates just overwrite the file)
-            if not getattr(create_quotation_for_the_document, "opened", {}):
-                create_quotation_for_the_document.opened = {}
-            if enterprise_code not in create_quotation_for_the_document.opened:
-                webbrowser.open(f"file://{temp_path}")
-                create_quotation_for_the_document.opened[enterprise_code] = True
-            time.sleep(2)
-        except Exception as e:
-            print(f" Preview failed for {enterprise_code}: {e}")
-
-    # === STEP 9: Logging ===
+    # === Preview in browser ===
     try:
-        log.log_quotation(rfp_id, {
-            "quotation": quotation_template,
-            "result_json": quotation_json,
-            "updated_result_json": quotation_json,
-            "updated_quotation": quotation_template
+        proposal_temp_path = os.path.join(tempfile.gettempdir(), f"proposal.html")
+        with open(proposal_temp_path, "w", encoding="utf-8") as f:
+            f.write(proposal_html['template'])
+
+        # Open only once per rfp_id
+        if not getattr(display_proposal, "opened", {}):
+            display_proposal.opened = {}
+        if rfp_id not in display_proposal.opened:
+            webbrowser.open(f"file://{proposal_temp_path}")
+            display_proposal.opened[rfp_id] = True
+        log.log_proposal(rfp_id, {
+            "proposal_html": proposal_html['template'],
+            "json_data": proposal_html['data'],
+            "updated_proposal_html": proposal_html['template']
         })
 
-    except Exception as log_err:
-        print(f"Logging failed: {log_err}")
+    except Exception as e:
+        print(f"⚠️ Preview failed: {e}")
 
-    # ✅ Return immediately
-    message = "✅ Quotation created successfully for all enterprises."
+    return f"✅ Proposal displayed successfully for RFP {rfp_id}."
+def detect_action(prompt: str) -> str:
+    pl = (prompt or "").lower()
+    if pl.startswith("add") or " add " in pl or "append" in pl:
+        return "add"
+    if any(x in pl for x in ["remove", "delete"]):
+        return "remove"
+    # update patterns like "change X to Y" / "update X to Y"
+    if re.search(r'\b(change|update|replace)\b', pl):
+        # if it contains "to" or "as" it's likely an update with new value
+        if re.search(r'\b(to|as|=)\b', pl):
+            return "update"
+        return "update"
+    return "update"
 
-    return message
-    # return quotation_template
+def get_edit_target(tag: Tag) -> Tag:
+    """
+    Expand the matched element into the right editable block.
 
-def save_updated_html(rfp_id, html_content,enterprise_code):
-    quotation_temp_path = os.path.join(tempfile.gettempdir(), f"quotation_{enterprise_code}.html")
-    with open(quotation_temp_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    return quotation_temp_path
+    - If matched tag is <td> -> return <tr>
+    - If matched tag is <li> -> return that <li> (caller can decide)
+    - If matched tag is a title DIV/H2/H3/H4 and next sibling is UL/OL -> return the UL/OL
+    - If matched tag itself is UL/OL -> return it
+    - Otherwise return the tag itself
+    - after creating quotation then only proposal will be created.
+    """
+    if not isinstance(tag, Tag):
+        return tag
 
-@mcp.tool(description="""
-This tool is called whenever the user asks to make changes in the quotation created.
+    # If inside a table cell -> bubble to the row
+    if tag.name == "td" and tag.parent and getattr(tag.parent, "name", "") == "tr":
+        return tag.parent
 
- IMPORTANT:
-- Always pass the **exact user query string**, without rewriting, summarizing, or expanding it.
-- Do NOT add product codes, unit prices, totals, or extra explanations.
-- the queries must in this structure {'enterprise_code': ['query1','query2']}
-""")
-async def make_changes_in_quotation(rfp_id: str, queries: dict):
+    # If tag is span inside a td -> try to bubble up
+    if tag.name == "span" and tag.parent and getattr(tag.parent, "name", "") == "td":
+        tr = tag.parent.parent
+        if tr and getattr(tr, "name", "") == "tr":
+            return tr
+        return tag.parent
 
-    for enterprise_code,query in queries.items():
-        for q in query:
-            quotation_log = log._load_logs()
-            data_json = quotation_log[rfp_id]['tools']['quotation']['result']
-            quotation_json = data_json['updated_result_json'][enterprise_code]
+    # If tag is li -> we operate on the list (return parent) OR allow li-specific ops
+    if tag.name == "li":
+        return tag  # caller can choose to operate on parent list or this li
 
-            # Extract update
-            field, context, new_value, mode = extract_field_and_value(q)
-            print(field, context, new_value, mode)
+    # If tag already a list -> return it directly
+    if tag.name in ("ul", "ol"):
+        return tag
 
-            # Normalize field key (case-insensitive match)
-            field_key = next((k for k in quotation_json.keys() if k.lower() == field.lower()), None)
+    # If it's a section heading / title, check immediate next siblings for a list
+    if tag.name in ("div", "h2", "h3", "h4", "h1"):
+        # skip if tag is itself a list-like header but not a textual header? we treat generically
+        # look at immediate next sibling(s), skipping whitespace/text nodes
+        nxt = tag.find_next_sibling()
+        while nxt and (isinstance(nxt, NavigableString) or (getattr(nxt, "name", None) is None)):
+            nxt = nxt.find_next_sibling()
+        if nxt and getattr(nxt, "name", "") in ("ul", "ol"):
+            return nxt
+        # sometimes list is wrapped in a div; check within next few siblings for nearest ul/ol before next header/div.section
+        cursor = tag.find_next_sibling()
+        steps = 0
+        while cursor and steps < 6:
+            if isinstance(cursor, Tag) and cursor.name in ("ul", "ol"):
+                return cursor
+            # stop if we hit another major section header
+            if isinstance(cursor, Tag) and cursor.name in ("div", "section", "header", "footer", "h2", "h3", "h4"):
+                break
+            cursor = cursor.find_next_sibling()
+            steps += 1
 
-            # Handle REMOVE separately
-            if mode == "REMOVE":
-                if field.lower() == "product":
-                    quotation_json["furniture_items_and_pricing"] = [
-                        item for item in quotation_json["furniture_items_and_pricing"]
-                        if not (item.get("product code") == context or item.get("description") == context)
-                    ]
-                elif field_key and isinstance(quotation_json[field_key], list):
-                    target_list = quotation_json[field_key]
-                    if isinstance(context, int) and 0 <= context < len(target_list):
-                        target_list.pop(context-1)
-                    elif isinstance(context, str):
-                        if context.lower() == "last" and target_list:
-                            target_list.pop()
-                        else:
-                            # Remove by content match
-                            quotation_json[field_key] = [
-                                item for item in target_list if context not in str(item)
-                            ]
-                updated_data = quotation_json
+    # default: return tag itself
+    return tag
+
+def locate_section_block(prompt: str, soup: BeautifulSoup, fuzz_threshold: int = 55) -> Tag | None:
+    """
+    Locate the container block (div/section/article) in HTML that best matches
+    the user's prompt. Works for ANY section (not hard-coded keywords).
+
+    Args:
+        prompt: Natural language query
+        soup: BeautifulSoup object of the HTML
+        fuzz_threshold: minimum fuzzy score to accept a heading match
+
+    Returns:
+        BeautifulSoup Tag (div/section/article/etc.) or None
+    """
+    p = (prompt or "").lower()
+
+    # 1) Fuzzy match prompt against headings
+    best_score = 0
+    best_heading = None
+    for heading in soup.find_all(["h1","h2","h3","h4","h5","h6"]):
+        htext = heading.get_text(" ", strip=True).lower()
+        score = fuzz.partial_ratio(p, htext)
+        if score > best_score:
+            best_score = score
+            best_heading = heading
+
+    if best_heading and best_score >= fuzz_threshold:
+        # Climb upward to find the logical container
+        for anc in best_heading.parents:
+            if getattr(anc, "name", None) in ("div", "section", "article", "body"):
+                # Prefer ancestor containing table/ul/ol (structured block)
+                if anc.find(["table","ul","ol"]):
+                    return anc
+                return anc
+        return best_heading
+
+    # 2) If no heading matched, fuzzy match all candidate blocks
+    candidates = extract_candidate_blocks(
+        soup,
+        tags=("div","section","article","tr","p","td","span")
+    )
+    flat_match = find_target_block(prompt, candidates, threshold=fuzz_threshold)
+    if flat_match:
+        return flat_match["tag"]
+
+    return None
+
+def extract_sections(soup):
+    sections = []
+    for heading in soup.find_all(["h1","h2","h3","h4","strong","b"]):
+        heading_text = heading.get_text(" ", strip=True)
+        # find next content (list, table, or paragraph)
+        nxt = heading.find_next_sibling()
+        while nxt and (nxt.name is None or nxt.get_text(strip=True) == ""):
+            nxt = nxt.find_next_sibling()
+        if nxt:
+            sections.append({"heading": heading_text, "content": nxt, "html": str(nxt)})
+    return sections
+
+@mcp.tool(description="""after creating proposal when user ask to make chaneges in the proposal call this tool with rfp_id and user query
+        user_queries is a list of strings containing the changes to be made in the proposal""")
+def make_changes_in_proposal(rfp_id: str, user_queries: list) -> str:
+    """
+    For each query: locate the whole container block (div/section) for the section named
+    in the prompt, send that block + prompt to LLM, get updated block back, replace it
+    in the original HTML, and print the final HTML at the end process.
+    """
+    # load current proposal HTML from logs (same as your original)
+    result = log._load_logs()[rfp_id]["tools"]["proposal"]["result"]
+    html_content = result["updated_proposal_html"]
+
+    for user_query in user_queries:
+        soup = parse_html(html_content)
+
+        # locate the block Tag (NOT string)
+        edit_target = locate_section_block(user_query, soup)
+
+        if not edit_target:
+            print("⚠️ No matching section block found for:", user_query)
+            # fallback to old behaviour: try find_target_block
+            candidates = extract_candidate_blocks(soup)
+            flat = find_target_block(user_query, candidates)
+            if flat:
+                edit_target = get_edit_target(flat["tag"])
+            else:
+                print("❌ No fallback match either. Skipping.")
+                continue
+
+        # ensure tag
+        if not isinstance(edit_target, Tag):
+            print("⚠️ locate_section_block returned non-Tag. Skipping.")
+            continue
+
+        # preview
+        preview = edit_target.get_text(" ", strip=True)[:300].replace("\n", " ")
+        print(f"\n🔎 Matched Block (tag: <{edit_target.name}>): {preview}")
+
+        action = detect_action(user_query)
+
+        # send the block + query to the LLM handler
+        try:
+            block_html = str(edit_target)
+            updated_html = proposal_change(user_query, block_html, action)  # your LLM function
+            if not updated_html:
+                print("⚠️ LLM returned empty response for query:", user_query)
+                continue
+
+            # Parse LLM result and decide how to replace
+            new_doc = BeautifulSoup(updated_html, "html.parser")
+
+            # find first non-empty tag in the returned result
+            first_tag = None
+            for node in new_doc.contents:
+                if isinstance(node, Tag):
+                    first_tag = node
+                    break
+                # if text node with content, keep as fallback
+                if isinstance(node, NavigableString) and node.strip():
+                    # wrap text later
+                    break
+
+            # Replacement logic:
+            # If first_tag exists and matches edit_target tag -> replace
+            if first_tag and getattr(first_tag, "name", None) == edit_target.name:
+                # create a replacement tag parsed by the original soup to avoid cross-soup issues
+                replacement = BeautifulSoup(str(first_tag), "html.parser").find(True)
+                edit_target.replace_with(replacement)
 
             else:
-                # Find path
-                path, value = find_update_path_in_json(quotation_json, field, context, new_value)
-                if path is None:
-                    raise ValueError(f"❌ Could not locate field '{field}' with context '{context}' in quotation JSON")
+                # If the original block contains a table and LLM returned a table/tbody/tr rows
+                orig_table = edit_target.find("table")
+                # search for table/tbody/tr in new_doc
+                new_table = new_doc.find("table")
+                new_tbody = new_doc.find("tbody")
+                new_trs = new_doc.find_all("tr")
 
-                # Traverse to parent
-                parent = quotation_json
-                for p in path[:-1]:
-                    parent = parent[p]
-                key = path[-1]
-                current_val = parent[key]
-
-                # Handle list fields
-                if isinstance(current_val, list):
-                    if mode == "ADD":
-                        current_val.append(new_value)
-                    elif mode == "SET":
-                        if isinstance(context, int) and context < len(current_val):
-                            current_val[context] = new_value
-                        elif isinstance(context, str) and context == "last":
-                            current_val[-1] = new_value
+                if orig_table and (new_table or new_tbody or new_trs):
+                    if new_table:
+                        replacement_table = BeautifulSoup(str(new_table), "html.parser").find("table")
+                        orig_table.replace_with(replacement_table)
+                    elif new_tbody:
+                        replacement_tbody = BeautifulSoup(str(new_tbody), "html.parser").find("tbody")
+                        existing_tbody = orig_table.find("tbody")
+                        if existing_tbody:
+                            existing_tbody.replace_with(replacement_tbody)
                         else:
-                            current_val = [new_value]  # overwrite whole list
-                        parent[key] = current_val
-                    updated_data = quotation_json
-
-                # Handle numeric fields
-                elif isinstance(current_val, (int, float)):
-                    if mode == "ADD":
-                        parent[key] = current_val + new_value
-                    elif mode == "SUBTRACT":
-                        parent[key] = current_val - new_value
-                    else:  # SET
-                        parent[key] = new_value
-                    updated_data = quotation_json
-
-                # Handle string fields
-                elif isinstance(current_val, str):
-                    if mode == "ADD":
-                        parent[key] = current_val + " " + str(new_value)
-                    else:  # SET
-                        parent[key] = str(new_value)
-                    updated_data = quotation_json
-
-                # Handle list fields again (safety net)
-                elif isinstance(current_val, list):
-                    if mode == "ADD":
-                        if new_value is None:
-                            raise ValueError(f"❌ Cannot ADD None to list field {field}")
-                        current_val.append(new_value)
-                    elif mode == "SET":
-                        if context is None:
-                            parent[key] = [new_value]  # overwrite whole list
-                        elif isinstance(context, int) and context < len(current_val):
-                            current_val[context] = new_value
-                        elif context == "last":
-                            current_val[-1] = new_value
-
+                            orig_table.append(replacement_tbody)
+                    elif new_trs:
+                        # append each returned <tr> into existing table's tbody or table
+                        tbody = orig_table.find("tbody") or orig_table
+                        for tr in new_trs:
+                            # ensure we insert soup-created tags to avoid cross-soup problems
+                            replacement_row = BeautifulSoup(str(tr), "html.parser").find("tr")
+                            tbody.append(replacement_row)
+                    else:
+                        # fallback: replace the whole block
+                        replacement = BeautifulSoup(str(new_doc), "html.parser")
+                        edit_target.replace_with(replacement)
                 else:
-                    raise ValueError(f"❌ Unsupported field type: {type(current_val)} for field {field}")
+                    # final fallback: if LLM returned several nodes, wrap them and replace the whole block
+                    # or if only text - replace content
+                    # build wrapper from the returned HTML and replace
+                    replacement_wrapper = BeautifulSoup(str(new_doc), "html.parser")
+                    # if replacement_wrapper has a top-level tag, use that
+                    top_tag = replacement_wrapper.find(True)
+                    if top_tag:
+                        edit_target.replace_with(top_tag)
+                    else:
+                        # plain text - set the inner text of the edit_target
+                        edit_target.string = updated_html
 
-            # Re-render HTML
-            updated_html = template.render_quotation(updated_data,today=date.today().strftime("%m/%d/%Y"))
-            names=updated_data["Enterprise Information"]["code"]
-            await html_to_pdf(updated_html,rfp_id,f"{names}.pdf")
+            # write changes back to html_content for next iteration
+            html_content = str(soup)
+            print("🔄 LLM update applied successfully for query:", user_query)
 
-            # Save updated JSON + HTML
-                # Save updated JSON + HTML for quotation
-            data_json['updated_result_json'][enterprise_code] = updated_data
-            data_json['updated_quotation'][enterprise_code] = updated_html
-            log.log_quotation(rfp_id, data_json)
+        except Exception as e:
+            print("❌ proposal_change / replacement failed; error:", e)
+            continue
 
-            save_updated_html(rfp_id, updated_html,enterprise_code)
+    # Save back to logs after all edits
+    result["updated_proposal_html"] = html_content
+    log.log_proposal(rfp_id=rfp_id, result=result)
 
+    # Save file for preview and printing (your existing helper)
+    save_updated_html(rfp_id, html_content)
 
+    # Print the full updated HTML (as you requested)
 
-    return "✅ Quotation updated successfully."
-
+    return "finished"
+    
 # ===== START SERVER =====
 if __name__ == "__main__":
-    import asyncio
     try:
-        print("✅ Starting MCP Server...")
+        import asyncio
+        print("✅ Starting MCP Server...", file=sys.stderr)
         mcp.run()
     except Exception as ex:
-        print(f"❌ MCP Server failed: {str(ex)}")
-        
+        print(f"❌ MCP Server failed: {str(ex)}", file=sys.stderr)
