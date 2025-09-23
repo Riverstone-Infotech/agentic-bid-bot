@@ -140,6 +140,7 @@ def get_edit_target(tag: Tag) -> Tag:
     - If matched tag is a title DIV/H2/H3/H4 and next sibling is UL/OL -> return the UL/OL
     - If matched tag itself is UL/OL -> return it
     - Otherwise return the tag itself
+    - after creating quotation then only proposal will be created.
     """
     if not isinstance(tag, Tag):
         return tag
