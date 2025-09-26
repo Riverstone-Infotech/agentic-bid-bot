@@ -353,8 +353,8 @@ Best regards,
             except Exception as e:
                 errors.append(f"❌ Failed for {enterprise}: {str(e)}")
 
-        # if email_msgs:
-        #     send_emails_smtp(email_msgs)
+        if email_msgs:
+            send_emails_smtp(email_msgs)
 
         return {"sent": [msg["To"] for msg in email_msgs], "errors": errors}
 
