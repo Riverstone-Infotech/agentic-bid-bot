@@ -8,16 +8,22 @@ from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 import aiohttp
 from PyPDF2 import PdfMerger
-from concurrent.futures import ProcessPoolExecutor
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 import re
+import webbrowser
+import tempfile
+from datetime import date
+import asyncio
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logs.data_logging import data_logger
 from systems.api_calls import api_calls
 from systems.pdf_tools import pdf_to_bytes
+from systems.rfq_analyzer import process_emails
+from views.template import render_quotation
+from systems.pdf_tools import html_to_pdf
 
 api = api_calls()
 load_dotenv()
@@ -214,7 +220,7 @@ async def Submit_the_final_quotation(rfp_id: str, email_address: str):
                 json_data = logs_data[rfp_id]["tools"]["quotation"]["result"]["updated_result_json"][enterprise]
                 last_json_data = json_data  
 
-                filename = f"{enterprise}.pdf"
+                filename = f"{enterprise}_update.pdf"
                 html_pdf_bytes = pdf_to_bytes(rfp_id, filename)
                 quotation_pdfs.append(html_pdf_bytes)
 
@@ -296,7 +302,6 @@ async def send_request_for_quotation_email_to_enterprise(rfp_id: str):
             return "❌ No quotations found."
 
         logs = logs_data
-        executor = ProcessPoolExecutor()
 
         email_msgs = []
         errors = []
@@ -315,7 +320,7 @@ async def send_request_for_quotation_email_to_enterprise(rfp_id: str):
                     errors.append(f"❌ Quotation not created for {enterprise}")
                     continue
 
-                filename = f"{json_data['Enterprise Information']['code']}_ent.pdf"
+                filename = f"{enterprise}_ent.pdf"
                 html_pdf_bytes = pdf_to_bytes(rfp_id, filename)
                 contacts_info = logs_data[rfp_id]["tools"]["proposal"]["result"]["json_data"][enterprise]["Dealer Information"]
 
@@ -348,13 +353,32 @@ Best regards,
             except Exception as e:
                 errors.append(f"❌ Failed for {enterprise}: {str(e)}")
 
-        if email_msgs:
-            send_emails_smtp(email_msgs)
+        # if email_msgs:
+        #     send_emails_smtp(email_msgs)
 
         return {"sent": [msg["To"] for msg in email_msgs], "errors": errors}
 
     except Exception as ex:
         return f"Error sending emails: {str(ex)}"
+
+@mcp.tool(description="trigger this tool when user ask to check for reply from any enterprises.")
+async def check_for_replies(rfp_id: str):
+    new_quotation,ent_code = process_emails(rfp_id)
+    print(new_quotation)
+    if new_quotation:
+        logs = log._load_logs()[rfp_id]
+        json_data = logs["tools"]["quotation"]["result"]["updated_result_json"][ent_code]
+        json_data["furniture_items_and_pricing"] = new_quotation
+        import json
+        print(json.dumps(json_data,indent=2))
+        update_html = render_quotation(json_data)
+        temp_path = os.path.join(tempfile.gettempdir(), f"updated_quotation_{ent_code}.html")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(update_html)
+        webbrowser.open(f"file://{temp_path}")
+        await html_to_pdf(update_html, rfp_id, f"{ent_code}_update.pdf")
+        return f"{ent_code} replied to your RFQ"
+    return "no email found"
 
 if __name__ == "__main__":
     print("✅ Starting MCP Server...")

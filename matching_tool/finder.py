@@ -1,275 +1,304 @@
+import json
 import re
+import hashlib
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-from rapidfuzz import fuzz
-import os
-os.environ["USE_TF"] = "0"
 from sentence_transformers import SentenceTransformer
-import pickle 
+from fuzzywuzzy import fuzz
+from collections import defaultdict
+import os
+import warnings
+import logging
+import pickle
 
-_embedder = None  # will initialize only on first encode
+# --- Silence TensorFlow / Transformers warnings ---
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+warnings.filterwarnings("ignore", category=FutureWarning)
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
+
+# -------------------------
+# Global embedder (singleton)
+# -------------------------
+_embedder = None
 def get_embedder():
     global _embedder
     if _embedder is None:
         _embedder = SentenceTransformer("all-MiniLM-L6-v2")
     return _embedder
 
-# -------------------------
-# Category Helpers
-# -------------------------
-def normalize_category(text: str) -> str:
-    text = text.lower()
-    seating = ["chair", "chairs", "stool", "bench", "sofa", "seating", "rocker"]
-    conference_tables = ["conference table", "boardroom table", "meeting table"]
-    coffee_tables = ["coffee table", "side table", "end table", "occasional table"]
-    beds = ["bed", "cot", "bunk", "couch"] 
-    work_tables = ["desk", "workstation", "worksurface", "training table"]
-    storage = ["pedestal", "file", "cabinet", "locker", "shelf", "storage"]
-    partitions = ["partition", "divider", "screen", "panel"]
-    markerboards = ["markerboard", "whiteboard", "blackboard", "tackboard", "eraser"]
-    acoustic = ["acoustic", "hush", "felt", "sound", "noise"]
-    wall_features = ["wall", "ceiling", "profile", "paneling"]
-
-    if any(k in text for k in conference_tables): return "conference tables"
-    if any(k in text for k in coffee_tables): return "coffee tables"
-    if any(k in text for k in work_tables): return "work tables"
-    if any(k in text for k in seating): return "seating"
-    if any(k in text for k in beds): return "beds"
-    if any(k in text for k in storage): return "storage"
-    if any(k in text for k in partitions): return "partitions"
-    if any(k in text for k in markerboards): return "markerboards"
-    if any(k in text for k in acoustic): return "acoustic panels"
-    if any(k in text for k in wall_features): return "wall features"
-    return "other"
-
-def category_match_boost(req_desc: str, prod_desc: str) -> float:
-    req_cat = extract_non_dimensions(normalize_category(req_desc))
-    prod_cat = extract_non_dimensions(normalize_category(prod_desc))
-    if req_cat == prod_cat and req_cat != "other":
-        return 0.3
-    elif req_cat != prod_cat and req_cat != "other" and prod_cat != "other":
-        return -0.5
-    return 0.0
-
-def extract_main_type(query, all_types=None):
-    query_lower = query.lower()
-    if all_types is None:
-        all_types = [
-            "task chair", "conference table", "coffee table", "desk", "lateral file",
-            "bench", "stool", "sofa", "partition", "whiteboard", "reception sofa",
-            "2-seater sofa", "3-seater sofa"
-        ]
-    # check for exact type matches first
-    for t in sorted(all_types, key=lambda x: -len(x)):  # longest first
-        if t in query_lower or t.rstrip("s") in query_lower:
-            return t
-    # fallback to first two meaningful words
-    tokens = [w for w in query_lower.split() if w not in ["black", "white", "brown", "small", "large", "for"]]
-    return " ".join(tokens[:2]) if tokens else ""
-
-def fuzzy_match_boost(req_desc: str, prod_desc: str) -> float:
-    ratio = fuzz.token_sort_ratio(req_desc.lower(), prod_desc.lower()) / 100.0
-    if ratio > 0.8:
-        return 0.3
-    elif ratio > 0.6:
-        return 0.1
-    else:
-        return -0.2
-
-def extract_dimensions(text: str):
-    return re.findall(r"\d+\s*(?:[dxwh]+)?\s*\d*", text.lower())
-
-def extract_non_dimensions(text: str):
-    return re.sub(r"\d+(?:\.\d+)?\s*(?:”)?\s*[wdxh]\s*(?:x\s*)?", '', text.lower())
-
-def dimension_match_boost(req_desc: str, prod_desc: str) -> float:
-    req_dims = extract_dimensions(req_desc)
-    if not req_dims:
-        return 0.0
-    prod_text = prod_desc.lower()
-    matches = sum(1 for d in req_dims if d.strip() and d in prod_text)
-    return 0.2 if matches > 0 else -0.3
-
-def embedding_match_boost_batch(query_emb, prod_emb_matrix):
-    query_norm = np.linalg.norm(query_emb)
-    prod_norms = np.linalg.norm(prod_emb_matrix, axis=1)
-    sims = np.dot(prod_emb_matrix, query_emb.T).flatten() / (prod_norms * query_norm + 1e-8)
-    return sims
-
-def has_token_overlap(req_desc: str, prod_category: str) -> bool:
-    tokens = re.findall(r"\w+", (prod_category or "").lower())
-    return any(t in req_desc.lower() for t in tokens)
-
-def score_product(query, desc, prod_category, embedding_sim, query_tokens):
-    score = 0.0
-
-    # Embedding similarity
-    score += embedding_sim * 0.5
-
-    # Fuzzy match
-    score += fuzzy_match_boost(extract_non_dimensions(query), desc)
-
-    # Category match
-    score += category_match_boost(query, desc) * 2
-
-    # Dimension match
-    score += dimension_match_boost(query, desc)
-
-    # Token overlap with category
-    if has_token_overlap(extract_non_dimensions(query), prod_category):
-        score += 0.2
-
-    # Key token overlap
-    desc_tokens = set(re.findall(r'\w+', desc.lower()))
-    common_tokens = query_tokens & desc_tokens
-    if len(common_tokens) / len(query_tokens) > 0.5:
-        score += 0.3
-
-    # --- Improved Main Type Boost ---
-    main_type = extract_main_type(query)
-    desc_main_type = extract_main_type(desc)
-    if main_type and desc_main_type and main_type == desc_main_type:
-        score += 1.5  # stronger boost for exact main type match
-
-    return score
 
 # -------------------------
-# Product Search Model
+# Utility: stable hash for documents
+# -------------------------
+def documents_hash(documents):
+    """
+    Compute a stable hash for a list of documents (order-sensitive).
+    """
+    m = hashlib.sha256()
+    for doc in documents:
+        # normalize whitespace and encode
+        m.update(doc.strip().replace("\n", " ").encode("utf-8"))
+        m.update(b"\n")
+    return m.hexdigest()
+
+
+# -------------------------
+# ProductSearchModel
 # -------------------------
 class ProductSearchModel:
-    def __init__(self, prods, threshold=0.4, cache_path="product_embeddings.pkl"):
-        self.prods = self.get_product_list(prods)
-        self.threshold = threshold
-        self.vectorizer = TfidfVectorizer()
-        self.codes, self.descs = [], []
+    def __init__(self, data, cache_dir="cache", force_rebuild=False, max_tfidf_features=1000):
+        """
+        data: raw enterprise listing JSON (same shape you used)
+        cache_dir: where to store cached embeddings/tfidf (if writable)
+        force_rebuild: if True, regenerate caches even if present
+        max_tfidf_features: limit TF-IDF vocabulary size for speed
+        """
+        self.data = self.get_product_list(data)
+        self.all_items = []
+        self.item_sources = {}
+        for key in self.data:
+            for item in self.data[key]:
+                # ensure the item has expected keys
+                item.setdefault('description', '')
+                item.setdefault('category', '')
+                item.setdefault('code', '')
+                self.all_items.append(item)
+                self.item_sources[id(item)] = key
 
-        for ent, items in self.prods.items():
-            for item in items:
-                if item.get("description"):
-                    self.codes.append((ent, item.get("code")))
-                    self.descs.append(item.get("description"))
+        # Prepare documents
+        self.documents = [ (item['description'] or '') + ' ' + (item.get('category') or '') for item in self.all_items ]
+        self.max_tfidf_features = max_tfidf_features
 
-        if not self.descs:
-            raise ValueError("❌ No product descriptions found in input price_list")
+        # Cache filenames based on documents hash
+        self.cache_dir = cache_dir
+        self._cache_writable = True
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            # test write
+            test_path = os.path.join(self.cache_dir, ".write_test")
+            with open(test_path, "w") as f:
+                f.write("ok")
+            os.remove(test_path)
+        except Exception:
+            self._cache_writable = False
 
-        # Always fit TF-IDF on descs
-        self.matrix = self.vectorizer.fit_transform(self.descs)
+        self._doc_hash = documents_hash(self.documents)
+        self._emb_file = os.path.join(self.cache_dir, f"emb_{self._doc_hash}.npy")
+        self._tf_file = os.path.join(self.cache_dir, f"tfidf_{self._doc_hash}.pkl")
 
-        # Embeddings
-        self.cache_path = cache_path
-        self.embeddings = None
-        if os.path.exists(cache_path):
+        # Vectorizer (we create instance now; vocab will be fit either from cache or current docs)
+        self.vectorizer = TfidfVectorizer(stop_words='english', max_features=self.max_tfidf_features)
+
+        # Lazy embedder
+        self.model = get_embedder()
+
+        # Load or build TF-IDF + embeddings
+        loaded = False
+        if not force_rebuild and self._cache_writable:
             try:
-                with open(cache_path, "rb") as f:
-                    self.embeddings = pickle.load(f)
-                print("✅ Loaded cached product embeddings.")
+                if os.path.exists(self._emb_file) and os.path.exists(self._tf_file):
+                    # load embeddings
+                    self.item_embeddings = np.load(self._emb_file)
+                    # load vectorizer + tfidf matrix
+                    with open(self._tf_file, "rb") as f:
+                        vt = pickle.load(f)
+                        # vt expected to be a dict with 'vectorizer' and 'tfidf_matrix'
+                        self.vectorizer = vt['vectorizer']
+                        self.tfidf_matrix = vt['tfidf_matrix']
+                    loaded = True
             except Exception:
-                print(" Failed to load cached embeddings. Recomputing...")
+                # any read error -> ignore and rebuild
+                loaded = False
 
-        if self.embeddings is None or len(self.embeddings) != len(self.descs):
-            embedder = get_embedder()
-            self.embeddings = embedder.encode(self.descs, device="cpu", show_progress_bar=True)
-            try:
-                with open(self.cache_path, "wb") as f:
-                    pickle.dump(self.embeddings, f)
-                print("✅ Cached product embeddings.")
-            except Exception:
-                print(" Could not cache embeddings.")
+        if not loaded:
+            # Fit vectorizer on current documents and compute TF-IDF matrix
+            self.tfidf_matrix = self.vectorizer.fit_transform(self.documents)
+            # Compute embeddings (batch)
+            # - convert_to_numpy True for direct numpy array
+            self.item_embeddings = self.model.encode(self.documents, convert_to_numpy=True, batch_size=32, show_progress_bar=False)
 
-    def _prepare_embeddings(self):
-        if self.vectorizer is None or self.embeddings is None:
-            print(" Computing TF-IDF and embeddings for products...")
-            self.vectorizer = TfidfVectorizer()
-            if self.descs:
-                self.matrix = self.vectorizer.fit_transform(self.descs)
-            else:
-                self.matrix = None
-            self.matrix = self.vectorizer.fit_transform(self.descs)
-            embedder = get_embedder()
-            self.embeddings = embedder.encode(self.descs, device="cpu", show_progress_bar=True)
-
-            # Save cache
-            try:
-                with open(self.cache_path, "wb") as f:
-                    pickle.dump(self.embeddings, f)
-            except Exception:
-                print(" Could not cache embeddings.")
-
+            # Try saving caches if writable
+            if self._cache_writable:
+                try:
+                    np.save(self._emb_file, self.item_embeddings)
+                    with open(self._tf_file, "wb") as f:
+                        pickle.dump({'vectorizer': self.vectorizer, 'tfidf_matrix': self.tfidf_matrix}, f)
+                except Exception:
+                    # ignore write errors - continue in-memory
+                    pass
 
     def get_product_list(self, price_list):
+        """
+        Extracts a dict mapping enterprise_code -> list of products (each product is dict with code, description, category)
+        """
         prods = {}
-        for edge in price_list['data']['getEnterpriseListing']['edges']:
-            ent_code = edge['node']['code']
-            ent_prods = [
-                {
-                    'code': prod.get('code'),
-                    'description': prod.get('description'),
-                    'category': (prod.get('productCategory') or [{}])[0].get('productCategory')
-                }
-                for child in edge['node'].get('children', [])
-                for grandchild in child.get('children', [])
-                if grandchild.get('key') == 'Product'
-                for prod in grandchild.get('children', [])
-                if prod.get('description')
-            ]
+        # defensively use .get chain
+        edges = price_list.get('data', {}).get('getEnterpriseListing', {}).get('edges', [])
+        for edge in edges:
+            node = edge.get('node', {}) or {}
+            ent_code = node.get('code')
+            if not ent_code:
+                continue
+            ent_prods = []
+            for child in node.get('children', []) or []:
+                for grandchild in child.get('children', []) or []:
+                    if grandchild.get('key') == 'Product':
+                        for prod in grandchild.get('children', []) or []:
+                            desc = prod.get('description')
+                            if not desc:
+                                continue
+                            ent_prods.append({
+                                'code': prod.get('code', ''),
+                                'description': desc,
+                                'category': (prod.get('productCategory') or [{}])[0].get('productCategory', '') if prod.get('productCategory') else ''
+                            })
             if ent_prods:
-                prods[ent_code] = ent_prods
+                prods[str(ent_code)] = ent_prods
         return prods
 
-    def search(self, query, top_k=50):
-        self._prepare_embeddings()  # ensure vectorizer & embeddings exist
+    # -------------------------
+    # helper extractors / scoring
+    # -------------------------
+    def extract_dimensions(self, description):
+        pattern = r'(\d+\.?\d*)\s*(d|w|h)?'
+        matches = re.findall(pattern, (description or '').lower())
+        dims = {'width': None, 'depth': None, 'height': None}
+        for val, label in matches:
+            try:
+                fval = float(val)
+            except Exception:
+                continue
+            if label == 'd':
+                dims['depth'] = fval
+            elif label == 'w':
+                dims['width'] = fval
+            elif label == 'h':
+                dims['height'] = fval
+        return dims
 
-        if self.vectorizer is None:
-            return {"status": "not_available", "reason": "Vectorizer not initialized."}
+    def dimension_similarity(self, req_dims, item_dims):
+        if not any(req_dims.values()) or not any(item_dims.values()):
+            return 0.0
+        score, count = 0.0, 0
+        for key in ['width', 'depth', 'height']:
+            if req_dims.get(key) is not None and item_dims.get(key) is not None:
+                a, b = req_dims[key], item_dims[key]
+                if abs(a - b) <= 2:
+                    score += 1.0
+                else:
+                    score += max(0, 1.0 - abs(a - b) / max(a, b))
+                count += 1
+        return score / max(count, 1)
 
-        query_vec_tfidf = self.vectorizer.transform([query])
-        sims = cosine_similarity(query_vec_tfidf, self.matrix)[0]
+    def token_overlap(self, req_desc, item_desc):
+        req_tokens = set((req_desc or '').lower().split())
+        item_tokens = set((item_desc or '').lower().split())
+        return len(req_tokens & item_tokens) / max(len(req_tokens | item_tokens), 1)
 
-        top_k_idx = np.argsort(sims)[-top_k:]
+    def category_match_boost(self, req_desc, item_category):
+        req_desc = (req_desc or '').lower()
+        category = (item_category or '').lower()
+        boost = 0.0
+        keywords = {
+            'table': ['table', 'desk'],
+            'chair': ['chair', 'seating', 'stool'],
+            'lounge': ['lounge', 'sofa', 'loveseat', 'seating'],
+            'ottoman': ['ottoman', 'stool'],
+            'workstation': ['desk', 'workstation', 'table'],
+            'file': ['file', 'pedestal'],
+            'divider': ['divider', 'screen'],
+            'conference': ['conference', 'table'],
+            'reception': ['lounge', 'seating', 'sofa', 'loveseat'],
+            'counter': ['counter', 'stool', 'chair'],
+            'pedestal': ['pedestal', 'file'],
+        }
+        for key, key_list in keywords.items():
+            if key in req_desc:
+                if any(kw in category for kw in key_list):
+                    boost += 0.5
+        return boost
 
-        embedder = get_embedder()
-        query_emb = embedder.encode([query], device="cpu")
-        top_embeddings = self.embeddings[top_k_idx]
-        embedding_sims = np.dot(top_embeddings, query_emb.T).flatten() / (
-            np.linalg.norm(top_embeddings, axis=1) * np.linalg.norm(query_emb) + 1e-8
-        )
+    # -------------------------
+    # Main matching function
+    # -------------------------
+    def match_best(self, requirements, score_threshold=0.5):
+        """
+        requirements: list of dicts {'description': str, 'qty': int (optional)}
+        returns: {'available': {ent_code: [ {code: description}, ... ]}, 'not_available': [description, ...]}
+        """
+        output = defaultdict(list)
+        not_available = []
 
-        query_tokens = set(re.findall(r'\w+', query.lower()))
+        if not self.all_items:
+            return {'available': {}, 'not_available': [r.get('description') for r in requirements]}
 
-        # Compute boosted scores for top-k only
-        boosted_scores = []
-        for idx, emb_sim in zip(top_k_idx, embedding_sims):
-            desc = self.descs[idx]
-            ent_code = self.codes[idx][0]
-            prod_list = self.prods.get(ent_code, [])
-            prod_category = prod_list[0].get("category", "") if prod_list else ""
-            score = score_product(query, desc, prod_category, emb_sim, query_tokens)
-            boosted_scores.append((idx, score))
+        # Precompute requirement embeddings & TF-IDF
+        req_descriptions = [r.get('description', '') for r in requirements]
+        req_dims_list = [self.extract_dimensions(desc) for desc in req_descriptions]
 
-        if not boosted_scores:
-            return {"status": "not_available", "query": query, "reason": "No products found"}
+        # TF-IDF transform of requirements
+        try:
+            req_tfidf_matrix = self.vectorizer.transform(req_descriptions)
+        except Exception:
+            # fallback: fit_transform on small set to avoid crash (rare)
+            tmp_vec = TfidfVectorizer(stop_words='english', max_features=self.max_tfidf_features)
+            req_tfidf_matrix = tmp_vec.fit_transform(req_descriptions)
 
-        best_idx, best_score = max(boosted_scores, key=lambda x: x[1])
-        ent, code = self.codes[best_idx]
-        best_desc = self.descs[best_idx]
-        prod_category = self.prods[ent][0].get("category", "")
+        # Embeddings for requirements (batched)
+        req_embeddings = self.model.encode(req_descriptions, convert_to_numpy=True, batch_size=32, show_progress_bar=False)
 
-        if best_score >= self.threshold:
-            return {
-                "status": "available",
-                "enterprise": ent,
-                "code": code,
-                "description": best_desc,
-                "category": prod_category,
-                "req_description": query,
-                "similarity": round(best_score, 3)
-            }
-        else:
-            return {
-                "status": "not_available",
-                "query": query,
-                "reason": f"No strong match found (best score={round(best_score,3)})"
-            }
+        item_embeddings = np.array(self.item_embeddings)
+        norms_items = np.linalg.norm(item_embeddings, axis=1) + 1e-8
+
+        for i, req_desc in enumerate(req_descriptions):
+            req_dims = req_dims_list[i]
+            req_tfidf = req_tfidf_matrix[i]
+            req_embed = req_embeddings[i]
+            norm_req = np.linalg.norm(req_embed) + 1e-8
+
+            # vectorized similarity scores
+            tfidf_scores = cosine_similarity(req_tfidf, self.tfidf_matrix).flatten()
+            embed_scores = (item_embeddings @ req_embed) / (norms_items * norm_req)
+
+            # combine with per-item signals
+            best = None
+            best_score = -1.0
+            for idx, item in enumerate(self.all_items):
+                item_desc = item.get('description', '')
+                item_category = item.get('category', '')
+
+                fuzzy_score = fuzz.ratio((req_desc or '').lower(), (item_desc or '').lower()) / 100.0
+                dim_score = self.dimension_similarity(req_dims, self.extract_dimensions(item_desc))
+                overlap_score = self.token_overlap(req_desc, item_desc)
+                cat_boost = self.category_match_boost(req_desc, item_category)
+
+                final_score = (
+                    0.3 * float(tfidf_scores[idx]) +
+                    0.3 * float(embed_scores[idx]) +
+                    0.2 * fuzzy_score +
+                    0.1 * dim_score +
+                    0.1 * overlap_score +
+                    cat_boost
+                )
+
+                if final_score > best_score:
+                    best_score = final_score
+                    best = {
+                        'code': item.get('code', ''),
+                        'description': item_desc,
+                        'category': item_category,
+                        'score': final_score,
+                        'source': self.item_sources.get(id(item), None)
+                    }
+
+            if best and best_score >= score_threshold:
+                output[best['source']].append({best['code']: req_desc})
+            else:
+                not_available.append(req_desc)
+
+        return {
+            'available': {key: output.get(key, []) for key in self.data.keys()},
+            'not_available': not_available
+        }

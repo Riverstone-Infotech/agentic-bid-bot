@@ -30,7 +30,6 @@ if not os.path.exists(venv_path):
 else:
     print("✅ Virtual environment already exists at .venv")
 
-run_command(f"source {venv_path}/bin/activate", repo_path)
 if os.path.exists(requirements_file):
     run_command(f"uv pip install -r requirements.txt", cwd=repo_path)
 else:

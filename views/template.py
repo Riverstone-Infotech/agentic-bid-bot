@@ -6,7 +6,7 @@ from jinja2 import Template
 from datetime import datetime, date
 import os
     
-def render_quotation(progress: dict,today) -> str:
+def render_quotation(progress: dict,today=date.today().strftime("%m/%d/%Y")) -> str:
     total_amount=0
     for item in progress.get("furniture_items_and_pricing"):
         # item["total amount"] = item.get("quantity") * item.get("unit price")

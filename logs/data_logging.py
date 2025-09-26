@@ -141,6 +141,13 @@ class data_logger:
         self._save_logs(logs)
         self.logger.info(f"📧 Email logged for RFP {rfp_id}")
         return rfp_id
+    
+    def log_replies(self, rfp_id: str, result: dict):
+        logs = self._load_logs()
+        logs = self._update_tool(logs, rfp_id, "replies", result)
+        self._save_logs(logs)
+        self.logger.info(f"replies logged for RFP {rfp_id}")
+        return rfp_id
 
     def get_rfp_data(self, rfp_id: str) -> dict:
         logs = self._load_logs()

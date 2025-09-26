@@ -32,8 +32,19 @@ def pdf_to_bytes(rfp_id: str, filename: str) -> bytes:
     """
     Return PDF file bytes for a given RFP ID and filename.
     """
-    pdf_path = PROJECT_ROOT / "quotation" / rfp_id / filename
-    if not pdf_path.exists():
+
+    base_dir = PROJECT_ROOT / "quotation" / rfp_id
+    pdf_path = base_dir / filename
+
+    # If file with original name doesn't exist, try without '_update'
+    if not pdf_path.exists() and "_update" in filename:
+        alt_filename = filename.replace('_update', '')
+        alt_pdf_path = base_dir / alt_filename
+        if alt_pdf_path.exists():
+            pdf_path = alt_pdf_path
+        else:
+            raise FileNotFoundError(f"PDF not found: {pdf_path} or {alt_pdf_path}")
+    elif not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
     with open(pdf_path, "rb") as f:
         return f.read()

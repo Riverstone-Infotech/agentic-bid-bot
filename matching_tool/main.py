@@ -12,6 +12,7 @@ import logging
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CHROMA_TELEMETRY_ENABLED"] = "false"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 warnings.filterwarnings("ignore", category=FutureWarning)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
@@ -33,39 +34,6 @@ def normalize_description(text):
 
 mcp = FastMCP("match enterprise")
 
-def extract_dimensions(text):
-    """
-    Extracts dimensions into a dict: {'W': (min, max), 'D': (min, max), 'H': (min, max)}.
-    Handles ranges like 30-36" and any order of W/D/H in the text.
-    If only a single value is found, min=max=value.
-    """
-    pattern = r'(\d+(?:\.\d+)?)(?:["]?\s*-\s*(\d+(?:\.\d+)?))?["]?\s*([WDH])'
-    dims = {}
-
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        min_val = float(match.group(1))
-        max_val = float(match.group(2) or min_val)
-        unit = match.group(3).upper()
-        dims[unit] = (min_val, max_val)
-
-    return dims
-
-def dimensions_match(request_text, availability_text):
-    req_dims = extract_dimensions(request_text)
-    avail_dims = extract_dimensions(availability_text)
-    
-    if not req_dims or not avail_dims:
-        return False
-    
-    for unit in req_dims:
-        if unit not in avail_dims:
-            return False
-        min_req, max_req = req_dims[unit]
-        min_avail, max_avail = avail_dims[unit]
-        # allow range vs range overlap
-        if max_req < min_avail or min_req > max_avail:
-            return False
-    return True
 
 def remove_dimensions(text: str) -> str:
     # Pattern: numbers (optionally decimal), optional range, optional ", then W/D/H/L
@@ -88,16 +56,15 @@ def get_product_availability(enterprise_list, requirement):
     try:
       matcher = ProductSearchModel(api.get_enterprise_price_list(enterprise_list))
 
-      for req in requirement:
-          matching=matcher.search(req['description'])
-          if matching['status'] == "available":
-              matches[matching['enterprise']].append({matching['code']:req['description']})
-          else:
-              not_available.append(req['description'])
-      
+    #   for req in requirement:
+      matching=matcher.match_best(requirement)
+        #   if matching['status'] == "available":
+        #       matches[matching['enterprise']].append({matching['code']:req['description']})
+        #   else:
+        #       not_available.append(req['description'])
+      return matching
     except Exception as e:
-        return {"error": f"❌ Error during enterprise matching: {str(e)}"}
-    return matches,not_available
+        return {"error": f"Error during enterprise matching: {str(e)}"}
 
 def clean_description(text: str) -> str:
     text = text.lower()
@@ -134,6 +101,32 @@ def clean_string(text: str) -> str:
     allowed_pattern = r"[^a-zA-Z0-9\s.,!?;:'\"()-]"
     cleaned_text = re.sub(allowed_pattern, "", text)
     return cleaned_text
+
+def split_descriptions_with_dimensions(items):
+    # Regex for dimensions: 2-part or 3-part, optional letters (d,w,h), flexible spaces
+    dimension_pattern = r'(\d+\s*[a-z]?)\s*x\s*(\d+\s*[a-z]?)\s*(?:x\s*(\d+\s*[a-z]?))?'
+
+    result = []
+
+    for item in items:
+        description = item['description']
+        
+        # Find all dimension matches
+        dimensions = re.findall(dimension_pattern, description, re.IGNORECASE)
+        dimensions = [tuple(filter(None, dim)) for dim in dimensions]  # remove empty captures
+
+        if len(dimensions) > 1:
+            for dim in dimensions:
+                dim_str = " x ".join(dim)
+                result.append({'qty': item['qty'], 'description': f"{description.split()[0]} {dim_str}"})
+        elif len(dimensions) == 1:
+            dim_str = " x ".join(dimensions[0])
+            result.append({'qty': item['qty'], 'description': f"{description.split()[0]} {dim_str}"})
+        else:
+            # No dimensions → keep as-is
+            result.append(item)
+
+    return result
 
 CACHE_FILE = "enterprise_match_cache.json"
 
@@ -283,11 +276,11 @@ Full enterprise details.
 A detailed reason explaining why the enterprise is a complete match.
 Also display the product codes that did not match.
 """)
-
 def match_enterprise_with_summary(requirement: list, rfp_id: str):
     try:
-        # 1. get enterprise list (full listing)
+        # 1. get enterprise list
         enterprise_data = api.get_enterprise_list()
+        # requirement = split_descriptions_with_dimensions(requirement)
         if isinstance(enterprise_data, dict) and "error" in enterprise_data:
             return {"error": f"❌ Error fetching enterprises: {enterprise_data['error']}"}
 
@@ -302,17 +295,13 @@ def match_enterprise_with_summary(requirement: list, rfp_id: str):
                 enterprise_codes_set.add(str(code))
             enterprise_nodes.append(node)
 
-        # 2. cache handling (Comment for various enterprise matching)
+        # 2. cache handling
         cache = load_cache()
         if str(rfp_id) in cache:
             matches = cache[str(rfp_id)]
         else:
-            # prepare simple list of {code, description} for prompt context
-            a = []
-            for node in enterprise_nodes:
-                a.append({"code": node.get("code"), "description": node.get("description")})
+            a = [{"code": node.get("code"), "description": node.get("description")} for node in enterprise_nodes]
 
-            # summary retrieval
             logs = log._load_logs()
             if rfp_id not in logs:
                 return {"error": "❌ No logs found for that rfp_id."}
@@ -320,7 +309,6 @@ def match_enterprise_with_summary(requirement: list, rfp_id: str):
             if not summary:
                 return {"error": "❌ No summary provided for matching."}
 
-            # Build a compact deterministic prompt. Keep prompt identical each run.
             match_prompt = (
                 "You are helping match a furniture proposal to the most suitable vendors.\n"
                 "Given the RFP summary (provided separately) and the list of enterprises below, "
@@ -333,8 +321,6 @@ def match_enterprise_with_summary(requirement: list, rfp_id: str):
                 "Return compact Python dict only (no surrounding text).\n"
             )
 
-
-            # Use chunking with the RFP summary as context (keeps your prior design)
             t = chunking(clean_string(summary))
             result = t.invoke(
                 {"query": match_prompt},
@@ -347,53 +333,44 @@ def match_enterprise_with_summary(requirement: list, rfp_id: str):
             )
             llm_output = result.get("result", "") or result.get("output", "") or ""
 
-            # parse LLM output robustly
             try:
                 raw_matches = _parse_matches_from_llm_text(llm_output)
             except Exception as ex:
                 return {"error": f"❌ LLM parse error: {str(ex)} | raw_output: {llm_output[:1000]}"}
 
-            # normalize the 'matching_enterprise' into a list[str]
             raw_list = raw_matches.get("matching_enterprise") if isinstance(raw_matches, dict) else None
             codes = _normalize_matching_enterprise_list(raw_list, enterprise_codes_set)
 
-            # normalize 'reason' keys to strings
             raw_reason = raw_matches.get("reason", {}) if isinstance(raw_matches, dict) else {}
-            normalized_reason = {}
-            if isinstance(raw_reason, dict):
-                for k, v in raw_reason.items():
-                    normalized_reason[str(k)] = v
+            normalized_reason = {str(k): v for k, v in raw_reason.items()}
 
             matches = {"matching_enterprise": codes, "reason": normalized_reason}
             cache[str(rfp_id)] = matches
             save_cache(cache)
 
-        # 3. product availability check
-        enterprise_availability_list, not_available = get_product_availability(matches['matching_enterprise'], requirement)
-        # if get_product_availability returned an error dict
-        if isinstance(enterprise_availability_list, dict) and "error" in enterprise_availability_list:
-            return enterprise_availability_list
+        # 3. product availability check (fixed unpacking)
+        availability_result = get_product_availability(matches['matching_enterprise'], requirement)
+        if isinstance(availability_result, dict) and "error" in availability_result:
+            return availability_result
+        enterprise_availability_list = availability_result["available"]
+        not_available = availability_result["not_available"]
 
-        # 4. assemble perfect_match list using enterprise_nodes (avoid passing weird args to api)
+        # 4. assemble perfect_match list
         perfect_match = []
-        avail_copy = dict(enterprise_availability_list)  # shallow copy to mutate
+        avail_copy = dict(enterprise_availability_list)
         for ent_code, products in list(avail_copy.items()):
             if products:
-                # find enterprise node
                 node = next((n for n in enterprise_nodes if str(n.get("code")) == str(ent_code)), None)
                 if node is None:
-                    # fallback: try fetching single enterprise (safe usage)
                     try:
                         node_resp = api.get_enterprise_list([ent_code])
                         node = node_resp['data']['getEnterpriseListing']['edges'][0]['node']
                     except Exception:
                         node = {"code": ent_code, "description": ""}
-                # attach reason if available
                 node_with_reason = dict(node)
                 node_with_reason['reason'] = matches.get('reason', {}).get(str(ent_code), [])
                 perfect_match.append(node_with_reason)
             else:
-                # remove empty entries
                 enterprise_availability_list.pop(ent_code, None)
 
         match_result = {
@@ -402,18 +379,16 @@ def match_enterprise_with_summary(requirement: list, rfp_id: str):
             "not_available": not_available
         }
 
-        # 5. log and return
         try:
             log.log_match(rfp_id=rfp_id, result=match_result)
         except Exception:
-            # logging failures shouldn't stop success
             pass
 
         return match_result
 
     except Exception as e:
-        # return the error text so you can debug
         return {"error": f"❌ Error during enterprise matching: {str(e)}"}
+
     
 # ===== START SERVER =====
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 model=os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 temp=float(os.getenv("OPENAI_TEMPERATURE", 0))
 api_key=os.getenv("OPENAI_API_KEY")
-
+anth_api = os.getenv("ANTHROPIC_API_KEY")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 global llm

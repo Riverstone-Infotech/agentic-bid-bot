@@ -11,11 +11,16 @@ import time
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.exceptions import GoogleAuthError
+
 import pdfplumber
+import copy
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logs.data_logging import data_logger
 from quotation_tool.main import make_changes_in_quotation
+
 
 log = data_logger()
 
@@ -75,7 +80,6 @@ def compare(old_json, new_json):
         if code in table_lookup:
             table_row = table_lookup[code]
 
-            new_quantity = convert_value(table_row.get("QTY", product["quantity"]))
             if table_row.get("DISCOUNT PRICE", "") != "":
                 new_unit_price = convert_value(table_row.get("DISCOUNT PRICE", product.get("discount price")))
             else:
@@ -84,10 +88,6 @@ def compare(old_json, new_json):
             new_total_amount = convert_value(table_row.get("TOTAL AMOUNT", product["total amount"]))
 
             # 👇 check if anything is different
-            # Only append if the new value is different from the old value and the new value is not empty
-            if new_quantity != '' and product["quantity"] != new_quantity:
-                changed.append(f"change the quantity of {product['description']} to {new_quantity}")
-
             if new_discount_price != '' and product.get("unit price") != new_discount_price:
                 changed.append(f"change the unit price of {product['description']} to {new_discount_price}")
 
@@ -102,12 +102,39 @@ def get_log(rfp_id: str):
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.exceptions import GoogleAuthError
+
 def get_service():
-    creds = Credentials.from_authorized_user_file("files/token.json", SCOPES)
+    base_dir = os.path.dirname(__file__) if '__file__' in globals() else os.getcwd()
+    token_path = os.path.join(base_dir, "token.json")
+    cred_file = os.path.join(base_dir, "credentials.json")  # <-- must exist
+    creds = None
+
+    # --- Try loading token.json ---
+    try:
+        if os.path.exists(token_path) and os.path.getsize(token_path) > 0:
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    except (GoogleAuthError, ValueError, json.JSONDecodeError):
+        print("⚠️ token.json is empty or invalid, starting OAuth flow...")
+
+    # --- If no valid creds, do OAuth flow ---
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-    # disable the deprecated file_cache
+        else:
+            if not os.path.exists(cred_file) or os.path.getsize(cred_file) == 0:
+                raise FileNotFoundError(
+                    "⚠️ credentials.json is missing or empty. Download from Google Cloud Console."
+                )
+            creds = InstalledAppFlow.from_client_secrets_file(
+                cred_file, SCOPES
+            ).run_local_server(port=0)
+
+        # Save new token
+        with open(token_path, "w") as token_file:
+            token_file.write(creds.to_json())
+
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 def get_unread_messages(service, sender):
@@ -190,16 +217,43 @@ def mark_as_read(service, msg_id):
         userId="me", id=msg_id, body={"removeLabelIds": ["UNREAD"]}
     ).execute()
 
-def process_emails():
+# --- Function to clean numeric values ---
+def format_value(text):
+    # Convert text to float
+    value = float(text)
+    
+    # Check if the decimal part is 0
+    if value.is_integer():
+        return int(value)
+    else:
+        return value
+# --- Update function ---
+def update_furniture_items(data: list, update_dict: dict):
+    rows = update_dict.get("rows", [])
+    for item in data:
+        for row in rows:
+            if str(row.get("PRODUCT CODE", "")).replace(" ", "").upper() == str(item.get("product code", "")).replace(" ", "").upper():
+                if row.get("DESCRIPTION"):
+                    item["description"] = row["DESCRIPTION"]
+                if row.get("DISCOUNT PRICE") or row.get("UNIT PRICE"):
+                    price = (row.get("DISCOUNT PRICE") or row.get("UNIT PRICE")).replace("$", "").replace(",", "").strip()
+                    if price:
+                        item["unit price"] = float(price)
+                if row.get("TOTAL AMOUNT"):
+                    total = row["TOTAL AMOUNT"].replace("$", "").replace(",", "").strip()
+                    if total:
+                        item["total amount"] = float(total)
+                else:
+                    item["total amount"] = item["unit price"] * item.get("quantity", 1)
+    return data
 
-    logs=log._load_logs()
-    email_data = {}
-    for id,data in logs.items():
-        email_data[id] = data['tools'].get('email',{}).get('result',{}).get('rfq_email',{})
-    service = get_service()
+def process_emails(rfp_id: str):
+    logs = log._load_logs()
+    if rfp_id in logs:
+        email_data = logs[rfp_id]['tools'].get('email', {}).get('result', {}).get('rfq_email', {})
+        service = get_service()
 
-    for rfpid, RFQ_DATA in email_data.items():
-        for sender, rfq_ids in RFQ_DATA.items():
+        for sender, rfq_ids in email_data.items():
             msgs = get_unread_messages(service, sender)
             for msg in msgs:
                 msg_id = msg["id"]
@@ -216,7 +270,6 @@ def process_emails():
                         matched_rfq = rfq_id
                         break
 
-
                 if not matched_rfq:
                     # ❌ Skip (leave unread)
                     print(f"❌ Skipping email from {sender} - no RFQ ID match")
@@ -228,24 +281,33 @@ def process_emails():
                 extracted_table = extract_last_pdf_from_memory(service, full_msg)
 
                 if extracted_table:
-                    # Case 1 & 2 → RFQ + PDF found
-                    old_json = logs[rfpid]['tools'].get('quotation',{}).get('result',{}).get('updated_result_json',{}).get(matched_rfq.split('-')[0],{}).get('furniture_items_and_pricing',{})
-                    if old_json:
-                        # print(f"old data: {json.dumps(old_json,indent = 2)} \n\n new data: {json.dumps(extracted_table,indent = 2)}")
-                        changed = compare(old_json, extracted_table["rows"])
-                        asyncio.run(make_changes_in_quotation(rfpid,{matched_rfq.split('-')[0]:changed}))
+                    ent_code = matched_rfq.split('-')[0]
+                    quotation_json = logs['tools'].get('quotation', {}).get('result', {}).get('updated_result_json', {}).get(ent_code, {})
+                    old_json = quotation_json.get('furniture_items_and_pricing', {})
 
+                    if old_json:
+                        changed = compare(old_json, extracted_table["rows"])
+                        new_quotation = update_furniture_items(old_json, extracted_table)
+                        log.log_replies(rfp_id, {rfq_id: new_quotation})
+
+                        # ✅ Mark as read
+                        mark_as_read(service, msg_id)
+
+                        return new_quotation,ent_code   # 👈 return here if found
                     else:
                         print("📊 Extracted table:", extracted_table)
+                        mark_as_read(service, msg_id)
+                        return extracted_table,ent_code  # if no old_json but new table extracted
                 else:
                     # Case 4 → RFQ found but no PDF
                     print(f"📩 Message from {sender} for {matched_rfq}:")
                     print(body.strip() or subject)
+                    mark_as_read(service, msg_id)
+                    return False, False  
 
-                # ✅ Mark email as read only if sender + RFQ matched
-                mark_as_read(service, msg_id)
+        # If no matching email found at all
+        return False, False
+    else:
+        return "RFP_ID not found"
 
-if __name__ == "__main__":
-    while True:
-        process_emails()
-        time.sleep(10)
+process_emails('474c5d7aafd4aa6da6ad0a948a98c615c8f20581593c64ff607aa000f4d02735')
