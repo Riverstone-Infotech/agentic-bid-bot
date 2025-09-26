@@ -4,7 +4,7 @@ __pycache__/
 
 .venv
 
-matching_tool/__pycache__
+matching_tool/__pycache__/
 summary_tool/__pycache__/
 quotation_tool/__pycache__/
 proposal_tool/__pycache__/
