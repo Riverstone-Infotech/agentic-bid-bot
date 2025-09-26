@@ -309,5 +309,3 @@ def process_emails(rfp_id: str):
         return False, False
     else:
         return "RFP_ID not found"
-
-process_emails('474c5d7aafd4aa6da6ad0a948a98c615c8f20581593c64ff607aa000f4d02735')
