@@ -1,53 +1,77 @@
-# Core environment
+# =========================
+# Core environment & server
+# =========================
 python-dotenv
 fastapi
 uvicorn
 uv
+python-multipart
 
-# LangChain and vector store
+# =========================
+# LangChain & vector stores
+# =========================
 langchain
 langchain-community
 langchain-openai
 langchain-huggingface
 chromadb
 
-# Embeddings and LLM
+# =========================
+# Embeddings & LLMs
+# =========================
 openai
-langchain-openai
 transformers
 sentence-transformers
 
-# PDF Loader & Processing
+# =========================
+# PDF & document processing
+# =========================
 PyMuPDF
 PyPDF2
 reportlab
+pdfplumber
 
-# Claude function calling (via your MCP server)
-mcp 
+# =========================
+# MCP / Claude integration
+# =========================
+mcp
 
+# =========================
 # HTTP requests & async
+# =========================
 requests
+httpx
 aiohttp
+tenacity
 
-# NLP and ML
+# =========================
+# Data science & ML
+# =========================
 numpy==1.24.4
 scikit-learn
 joblib
 rapidfuzz
 pandas
 
+# =========================
 # Web automation & scraping
+# =========================
 playwright
 beautifulsoup4
 
+# =========================
 # Image & visualization
+# =========================
 Pillow
 
+# =========================
 # Template rendering
+# =========================
 jinja2
 
-# Email handling (MIME already in stdlib, but keeping smtplib deps safe)
-pdfplumber
+# =========================
+# Google API / Email handling
+# =========================
 google-api-python-client
 google-auth
 google-auth-oauthlib
